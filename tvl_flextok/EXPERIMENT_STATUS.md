@@ -112,10 +112,23 @@ depth, latent patch size, and depth-2 flow decoder fixed. The 224x224 input
 produces a 28x28 VAE latent; patch size 2 exposes 196 latent memory tokens, so
 the change reduces compression from about 6.1x to about 3.1x.
 
-The run uses 1,000 updates at learning rate `3e-4` and saves fixed-noise grids
-for `k={1,4,8,16,32,64}`. At the time of this update it is running on
-`babel-p9-32`. Scratch output will be archived to:
+The initial joint run uses 1,000 updates at learning rate `3e-4` and saves
+fixed-noise grids for `k={1,4,8,16,32,64}`. It is followed by three dependent
+1,000-update reconstruction-only phases with the tokenizer frozen and fresh
+cosine schedules at `1e-4`, `5e-5`, and `2.5e-5`.
+
+| Phase | Slurm job | State at update | Persistent run name |
+| --- | ---: | --- | --- |
+| Joint 64-register alignment | 9348795 | Running | `flextok_latent_overfit8_reg64` |
+| Flow continuation 1 | 9348870 | Dependency | `flextok_latent_overfit8_reg64_flowft` |
+| Flow continuation 2 | 9348873 | Dependency | `flextok_latent_overfit8_reg64_flowft2` |
+| Flow continuation 3 | 9348876 | Dependency | `flextok_latent_overfit8_reg64_flowft3` |
+
+Each continuation uses Slurm `afterok`, warm-starts the preceding archived best
+joint checkpoint, and retains the same 64-register architecture. The complete
+experiment therefore contains 4,000 updates. Scratch outputs will be archived
+under:
 
 ```text
-tvl_flextok/logs/runs/flextok_latent_overfit8_reg64/
+tvl_flextok/logs/runs/flextok_latent_overfit8_reg64*/
 ```
