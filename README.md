@@ -4,7 +4,7 @@ by <a href="https://max-fu.github.io">Max (Letian) Fu</a>, <a href="https://www.
 [[Paper](https://openreview.net/forum?id=tFEOOH9eH0)] | [[Project Page](https://tactile-vlm.github.io/)] | [[Checkpoints](https://huggingface.co/mlfu7/Touch-Vision-Language-Models)] | [[Dataset](https://huggingface.co/datasets/mlfu7/Touch-Vision-Language-Dataset)] | [[Citation](#citation)]
 
 <p align="center">
-  <img src="img/splash_figure_alt.png" width="800">
+  <img src="assets/images/splash_figure_alt.png" width="800">
 </p>
 
 
@@ -105,7 +105,9 @@ The checkpoints for TVL-LLaMA are provided below:
 </tbody></table>
 
 ## Training And Evaluation
-We provide tactile encoder training script in [tvl_enc](tvl_enc/README.md) and TVL-LLaMA training script in [tvl_llama](tvl_llama/README.md). In particular, **TVL-Benchmark** is described [here](tvl_llama/README.md#tvl-benchmark).
+We provide tactile encoder training scripts in [tvl_enc](tvl_enc/README.md), FlexTok-style multimodal tokenizer training in [tvl_flextok](tvl_flextok/README.md), and TVL-LLaMA training scripts in [tvl_llama](tvl_llama/README.md). In particular, **TVL-Benchmark** is described [here](tvl_llama/README.md#tvl-benchmark).
+
+The `tvl_flextok/` package is an experimental FlexTok-style tokenizer over frozen TVL sequence features and frozen VAE latent patches. It trains ordered, FSQ-discrete register bottlenecks with shared-token contrastive alignment and mandatory rectified-flow reconstruction in frozen VAE latent space. VAE-decoded prefix grids are reconstruction diagnostics; feature reconstruction back to frozen TVL encoder features is intentionally disabled so the register tokens can compact the input and discard unnecessary encoder details. Current experiment status and artifact paths are recorded in [tvl_flextok/EXPERIMENT_STATUS.md](tvl_flextok/EXPERIMENT_STATUS.md).
 
 ## License
 This project is under the Apache 2.0 license. See [LICENSE](LICENSE.txt) for details.

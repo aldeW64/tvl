@@ -1,0 +1,69 @@
+# TVL-FlexTok: Cross-Modality Alignment with Register Tokens
+# Default configuration
+
+# ---- Model ----
+model:
+  hidden_dim: 512
+  n_registers: 32
+  n_shared: 8              # Registers for cross-modal alignment
+  n_layers: 4              # Transformer depth per modality
+  n_heads: 8
+  model_dropout: 0.1
+  feature_mode: "sequence"
+  tokenizer_input: "vae_tvl"   # VAE latent patches + frozen TVL semantic tokens
+  encoder_latent_patch_size: 2
+  nested_dropout: true
+  nested_dropout_mode: "power_of_two"
+  fsq_levels: "8 8 8 5 5 5"
+
+# ---- Loss ----
+loss:
+  contrastive_weight: 1.0
+  continuous_contrastive_weight: 0.25
+  diversity_weight: 0.1
+  diversity_min_std: 0.2
+  reconstruction_weight: 1.0
+
+# ---- Frozen codec and rectified-flow decoder ----
+reconstruction:
+  codec_id: "EPFL-VILAB/flextok_vae_c4"
+  flow_hidden_dim: 512
+  flow_depth: 8
+  flow_heads: 8
+  flow_patch_size: 2
+  flow_steps: 25
+  flow_condition_dropout: 0.1
+  flow_guidance_scale: 1.0
+  recon_vis_interval: 5
+  recon_vis_samples: 4
+
+# ---- Training ----
+training:
+  stage: "alignment"
+  epochs: 100
+  batch_size: 256
+  accum_iter: 1
+  blr: 3.0e-4
+  min_lr: 0.0
+  weight_decay: 0.05
+  warmup_epochs: 10
+  seed: 42
+
+# ---- Data ----
+data:
+  datasets:
+    - "ssvtp"
+    - "hct"
+  datasets_dir: "./.datasets"
+  num_workers: 10
+
+# ---- Stage 1 Checkpoint ----
+stage1:
+  tactile_model: "vit_tiny_patch16_224"
+  stage1_checkpoint: null           # Path to Stage 1 checkpoint
+
+# ---- Output ----
+output:
+  output_dir: "/scratch/peilinwu/tvl_flextok/runs/default"
+  log_name: null
+  log_dir: "./tvl_flextok/logs/runs/default"
