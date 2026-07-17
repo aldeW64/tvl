@@ -76,9 +76,16 @@ python tvl_flextok/test_modules.py
 
 tvl_flextok/scripts/submit_slurm.sh alignment
 tvl_flextok/scripts/submit_slurm.sh alignment_4gpu
+tvl_flextok/scripts/submit_slurm.sh alignment \
+  N_REGISTERS=64 N_SHARED=8 RECON_VIS_PREFIXES="1 4 8 16 32 64"
 tvl_flextok/scripts/submit_slurm.sh reconstruction \
   ALIGNMENT_CKPT=/path/to/checkpoint_best_joint.pth
 ```
+
+`N_REGISTERS` and `N_SHARED` configure register capacity in both alignment
+Slurm launchers. Increasing the register count requires training a new
+tokenizer; a 32-register checkpoint cannot be strictly warm-started into a
+64-register model because its learned register and position tensors differ.
 
 Direct execution and module execution are both supported:
 

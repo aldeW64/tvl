@@ -102,3 +102,20 @@ The next informative model experiment should use the intended depth-8 flow
 decoder on a train/validation split with no duplicated examples. If vision
 grid artifacts remain, compare latent patch size 2 against patch size 1 while
 holding tokenizer capacity and evaluation noise fixed.
+
+## Active Capacity Ablation
+
+Slurm job `9348795` tests whether the 32-register bottleneck limits full-prefix
+detail. It trains a new 64-register tokenizer from scratch on the same eight
+pairs while holding shared registers (8), FSQ levels, hidden size, resampler
+depth, latent patch size, and depth-2 flow decoder fixed. The 224x224 input
+produces a 28x28 VAE latent; patch size 2 exposes 196 latent memory tokens, so
+the change reduces compression from about 6.1x to about 3.1x.
+
+The run uses 1,000 updates at learning rate `3e-4` and saves fixed-noise grids
+for `k={1,4,8,16,32,64}`. At the time of this update it is running on
+`babel-p9-32`. Scratch output will be archived to:
+
+```text
+tvl_flextok/logs/runs/flextok_latent_overfit8_reg64/
+```

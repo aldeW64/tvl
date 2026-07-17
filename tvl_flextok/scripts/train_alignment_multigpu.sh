@@ -34,6 +34,8 @@ DATASETS="${DATASETS:-ssvtp hct}"
 FEATURE_MODE="${FEATURE_MODE:-sequence}"
 TOKENIZER_INPUT="${TOKENIZER_INPUT:-vae_tvl}"
 ENCODER_LATENT_PATCH_SIZE="${ENCODER_LATENT_PATCH_SIZE:-2}"
+N_REGISTERS="${N_REGISTERS:-32}"
+N_SHARED="${N_SHARED:-8}"
 RECONSTRUCTION_WEIGHT="${RECONSTRUCTION_WEIGHT:-1.0}"
 CONTRASTIVE_WEIGHT="${CONTRASTIVE_WEIGHT:-1.0}"
 CONTINUOUS_CONTRASTIVE_WEIGHT="${CONTINUOUS_CONTRASTIVE_WEIGHT:-0.25}"
@@ -84,6 +86,7 @@ echo "Stage 1 checkpoint: $STAGE1_CKPT"
 echo "Datasets dir: $DATASETS_DIR"
 echo "Output dir: $OUTPUT_DIR"
 echo "Feature mode: $FEATURE_MODE"
+echo "Registers: $N_REGISTERS total, $N_SHARED shared"
 echo "Flow reconstruction weight: $RECONSTRUCTION_WEIGHT"
 echo "W&B mode: $WANDB_MODE"
 echo "GPUs: $NUM_GPUS"
@@ -140,8 +143,8 @@ fi
     --log_name "$LOG_NAME" \
     --log_dir "$RUN_LOG_DIR" \
     --hidden_dim 512 \
-    --n_registers 32 \
-    --n_shared 8 \
+    --n_registers "$N_REGISTERS" \
+    --n_shared "$N_SHARED" \
     --n_layers 4 \
     --n_heads 8 \
     --contrastive_weight "$CONTRASTIVE_WEIGHT" \
