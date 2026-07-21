@@ -103,10 +103,10 @@ decoder on a train/validation split with no duplicated examples. If vision
 grid artifacts remain, compare latent patch size 2 against patch size 1 while
 holding tokenizer capacity and evaluation noise fixed.
 
-## Active Capacity Ablation
+## Completed 64-Register Capacity Ablation
 
-Slurm job `9348795` tests whether the 32-register bottleneck limits full-prefix
-detail. It trains a new 64-register tokenizer from scratch on the same eight
+The capacity ablation tests whether the 32-register bottleneck limits
+full-prefix detail. It trains a new 64-register tokenizer from scratch on the same eight
 pairs while holding shared registers (8), FSQ levels, hidden size, resampler
 depth, latent patch size, and depth-2 flow decoder fixed. The 224x224 input
 produces a 28x28 VAE latent; patch size 2 exposes 196 latent memory tokens, so
@@ -117,18 +117,47 @@ fixed-noise grids for `k={1,4,8,16,32,64}`. It is followed by three dependent
 1,000-update reconstruction-only phases with the tokenizer frozen and fresh
 cosine schedules at `1e-4`, `5e-5`, and `2.5e-5`.
 
-| Phase | Slurm job | State at update | Persistent run name |
-| --- | ---: | --- | --- |
-| Joint 64-register alignment | 9348795 | Running | `flextok_latent_overfit8_reg64` |
-| Flow continuation 1 | 9348870 | Dependency | `flextok_latent_overfit8_reg64_flowft` |
-| Flow continuation 2 | 9348873 | Dependency | `flextok_latent_overfit8_reg64_flowft2` |
-| Flow continuation 3 | 9348876 | Dependency | `flextok_latent_overfit8_reg64_flowft3` |
+| Phase | Slurm job | Result | Best validation flow loss |
+| --- | ---: | --- | ---: |
+| Joint 64-register alignment | 9348795 | Completed | 0.4160 |
+| Flow continuation 1 | 9348870 | Completed | 0.2704 |
+| Flow continuation 2 | 9348873 | Completed | 0.2230 |
+| Flow continuation 3 | 9348876 | Completed | **0.2012** |
 
-Each continuation uses Slurm `afterok`, warm-starts the preceding archived best
-joint checkpoint, and retains the same 64-register architecture. The complete
-experiment therefore contains 4,000 updates. Scratch outputs will be archived
-under:
+All jobs completed with exit code `0:0`. Each continuation used Slurm
+`afterok`, warm-started the preceding archived best joint checkpoint, and
+retained the same 64-register architecture. The complete experiment contains
+4,000 updates, and all outputs were archived under:
 
 ```text
 tvl_flextok/logs/runs/flextok_latent_overfit8_reg64*/
+```
+
+The authoritative checkpoint is phase-3 epoch 991:
+
+```text
+tvl_flextok/logs/runs/flextok_latent_overfit8_reg64_flowft3/checkpoints/checkpoint_best_joint.pth
+```
+
+It is a format-version-3 compact checkpoint of about 121 MiB with 64 total
+registers, 8 shared registers, a depth-2 flow decoder, and frozen tokenizer
+weights. Its validation flow loss is 0.2012 (vision 0.3021, tactile 0.1003).
+
+At epoch 900, fixed-noise full-prefix reconstruction is:
+
+| Registers | Vision PSNR / SSIM | Tactile PSNR / SSIM |
+| ---: | ---: | ---: |
+| 32-register baseline, `k=32` | 27.62 dB / 0.9841 | 33.98 dB / 0.9947 |
+| 64-register model, `k=32` | 31.96 dB / 0.9942 | 37.16 dB / 0.9975 |
+| 64-register model, `k=64` | **31.99 dB / 0.9942** | **37.60 dB / 0.9977** |
+
+Most of the vision gain appears by `k=16`; `k=64` adds little over `k=32` for
+vision, while tactile still benefits measurably. The 64-register tokenizer has
+87.5% eight-pair retrieval rather than the baseline's 100%, and only about
+6.6%/6.8% discrete-code utilization for vision/tactile. It is therefore the
+best reconstruction checkpoint, but not an unqualified replacement for the
+32-register alignment checkpoint. The full loss curve is:
+
+```text
+tvl_flextok/logs/runs/flextok_latent_overfit8_reg64_flowft3/loss_curve_full_history.png
 ```
