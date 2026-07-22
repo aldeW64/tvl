@@ -44,7 +44,7 @@ def get_args_parser():
     parser.add_argument("--tokenizer_input", choices=["vae", "tvl", "vae_tvl"], default="vae_tvl")
     parser.add_argument("--nested_dropout", action="store_true", default=True)
     parser.add_argument("--no_nested_dropout", action="store_false", dest="nested_dropout")
-    parser.add_argument("--nested_dropout_mode", choices=["power_of_two", "uniform"], default="power_of_two")
+    parser.add_argument("--nested_dropout_mode", choices=["power_of_two", "uniform"], default="uniform")
     parser.add_argument("--fsq_levels", default="8 8 8 5 5 5")
     parser.add_argument("--use_token_type_embed", action="store_true", default=True)
     parser.add_argument("--no_token_type_embed", action="store_false", dest="use_token_type_embed")
@@ -65,11 +65,16 @@ def get_args_parser():
     parser.add_argument("--flow_steps", type=int, default=25)
     parser.add_argument("--flow_condition_dropout", type=float, default=0.1)
     parser.add_argument("--flow_guidance_scale", type=float, default=1.0)
-    parser.add_argument("--ar_hidden_dim", type=int, default=512)
-    parser.add_argument("--ar_depth", type=int, default=8)
-    parser.add_argument("--ar_heads", type=int, default=8)
+    parser.add_argument("--gpt_hidden_dim", type=int, default=512)
+    parser.add_argument("--gpt_depth", type=int, default=8)
+    parser.add_argument("--gpt_heads", type=int, default=8)
+    parser.add_argument("--gpt_dropout", type=float, default=0.1)
+    parser.add_argument("--text_condition_dropout", type=float, default=0.1)
+    parser.add_argument("--generation_temperature", type=float, default=1.0)
+    parser.add_argument("--generation_top_k", type=int, default=256)
+    parser.add_argument("--generation_guidance_scale", type=float, default=1.0)
 
-    parser.add_argument("--stage", choices=["alignment", "ar", "reconstruction"], default="alignment")
+    parser.add_argument("--stage", default="alignment", metavar="{alignment,generation}")
     parser.add_argument("--alignment_checkpoint", default=None)
     parser.add_argument("--stage1_checkpoint", required=False, default=None)
     parser.add_argument("--tactile_model", default="vit_tiny_patch16_224",
@@ -99,8 +104,8 @@ def get_args_parser():
     parser.add_argument("--log_name", default=None)
     parser.add_argument("--recon_vis_interval", type=int, default=5)
     parser.add_argument("--recon_vis_samples", type=int, default=4)
-    parser.add_argument("--recon_vis_prefixes", default="1 4 8 16 32")
-    parser.add_argument("--save_latest", action="store_true", default=False)
+    parser.add_argument("--recon_vis_prefixes", default="1 4 8 16 32 64")
+    parser.add_argument("--save_latest", action="store_true", default=True)
     parser.add_argument("--no_save_latest", action="store_false", dest="save_latest")
     parser.add_argument("--resume", default="")
     parser.add_argument("--warm_start", default="",
@@ -108,7 +113,7 @@ def get_args_parser():
     parser.add_argument("--freeze_tokenizer", action="store_true",
                         help="Freeze register tokenizer during alignment reconstruction fine-tuning")
     parser.add_argument("--resume_interval", type=int, default=10,
-                        help="Write node-local optimizer state every N epochs; 0 disables it")
+                        help="Write persistent optimizer state every N epochs; 0 disables it")
     parser.add_argument("--start_epoch", type=int, default=0)
     parser.add_argument("--disable_wandb", action="store_true")
     parser.add_argument("--wandb_project", default="tvl-flextok")
@@ -126,6 +131,8 @@ def get_args_parser():
 
 def build_datasets(args):
     modalities = [ModalityType.VISION, ModalityType.TACTILE]
+    if args.stage == "generation":
+        modalities.append(ModalityType.TEXT)
     prompt = "This image gives tactile feelings of "
     train, val = [], []
     if "ssvtp" in args.datasets:
@@ -134,10 +141,12 @@ def build_datasets(args):
         train.append(TacVisDataset(
             root_dir=root, split="train", transform_rgb=RGB_AUGMENTS,
             transform_tac=tactile_train, modality_types=modalities, text_prompt=prompt,
+            text_random_subset=args.stage != "generation",
         ))
         val.append(TacVisDataset(
             root_dir=root, split="val", transform_rgb=RGB_PREPROCESS,
             transform_tac=TAC_PREPROCESS, modality_types=modalities, text_prompt=prompt,
+            text_random_subset=args.stage != "generation",
         ))
     if "hct" in args.datasets:
         root = os.path.join(args.datasets_dir, "hct")
@@ -150,10 +159,12 @@ def build_datasets(args):
             train.append(TacVisDatasetV2(
                 root_dir=directories, split="train", transform_rgb=RGB_AUGMENTS,
                 transform_tac=tactile_train, modality_types=modalities, text_prompt=prompt,
+                text_random_subset=args.stage != "generation",
             ))
             val.append(TacVisDatasetV2(
                 root_dir=directories, split="val", transform_rgb=RGB_PREPROCESS,
                 transform_tac=TAC_PREPROCESS, modality_types=modalities, text_prompt=prompt,
+                text_random_subset=args.stage != "generation",
             ))
     if not train:
         raise ValueError(f"No requested datasets found below {args.datasets_dir}")
@@ -201,7 +212,7 @@ def _load_stage1(model, checkpoint_path):
 def build_model(args, device):
     frozen = TVL(
         tactile_model=args.tactile_model,
-        active_modalities=[ModalityType.VISION, ModalityType.TACTILE],
+        active_modalities=[ModalityType.VISION, ModalityType.TACTILE, ModalityType.TEXT],
         feature_mode=args.feature_mode,
     )
     _load_stage1(frozen, args.stage1_checkpoint)
@@ -253,13 +264,51 @@ def load_config_overrides(args, config_path, argv):
     return args
 
 
+def apply_alignment_checkpoint_metadata(args, argv):
+    """Use tokenizer architecture metadata unless the CLI explicitly conflicts."""
+    if args.stage != "generation":
+        return args
+    if not args.alignment_checkpoint or not os.path.isfile(args.alignment_checkpoint):
+        raise FileNotFoundError("--stage generation requires --alignment_checkpoint")
+    checkpoint = torch.load(args.alignment_checkpoint, map_location="cpu")
+    if checkpoint.get("stage") != "alignment":
+        raise ValueError("--alignment_checkpoint must contain an alignment-stage checkpoint")
+    saved = checkpoint.get("args", {})
+    parser = get_args_parser()
+    explicit = {
+        action.dest for action in parser._actions
+        if any(option in argv for option in action.option_strings)
+    }
+    keys = (
+        "hidden_dim", "n_registers", "n_shared", "n_layers", "n_heads",
+        "model_dropout", "feature_mode", "tokenizer_input", "nested_dropout_mode",
+        "fsq_levels", "use_token_type_embed", "encoder_latent_patch_size",
+        "tactile_model", "codec_id", "flow_hidden_dim", "flow_depth",
+        "flow_heads", "flow_patch_size",
+    )
+    for key in keys:
+        if key not in saved:
+            continue
+        if key in explicit and str(getattr(args, key)) != str(saved[key]):
+            raise ValueError(
+                f"Explicit --{key}={getattr(args, key)} conflicts with alignment checkpoint value {saved[key]}"
+            )
+        setattr(args, key, saved[key])
+    return args
+
+
 def main():
     args = get_args_parser().parse_args()
     if args.config:
         args = load_config_overrides(args, args.config, sys.argv)
-    if args.stage == "reconstruction":
-        print("WARNING: --stage reconstruction is deprecated; using --stage ar")
-        args.stage = "ar"
+    if args.stage in {"ar", "reconstruction"}:
+        raise ValueError(
+            "The continuous latent autoregressive stage was removed because it was not FlexTok. "
+            "Use --stage generation for text-conditioned discrete-register modeling."
+        )
+    if args.stage not in {"alignment", "generation"}:
+        raise ValueError("--stage must be alignment or generation")
+    args = apply_alignment_checkpoint_metadata(args, sys.argv)
     if args.stage == "alignment" and args.reconstruction_weight <= 0:
         raise ValueError("Alignment requires --reconstruction_weight > 0")
     if not 0 <= args.flow_condition_dropout < 1:
@@ -268,6 +317,10 @@ def main():
         raise ValueError("--flow_guidance_scale must be >= 1")
     if args.continuous_contrastive_weight < 0 or args.diversity_weight < 0:
         raise ValueError("Tokenizer auxiliary loss weights must be non-negative")
+    if not 0 <= args.text_condition_dropout < 1:
+        raise ValueError("--text_condition_dropout must be in [0, 1)")
+    if args.generation_guidance_scale < 1:
+        raise ValueError("--generation_guidance_scale must be >= 1")
     if args.log_name:
         args.output_dir = os.path.join(args.output_dir, args.log_name)
     args.log_dir = args.log_dir or args.output_dir

@@ -1,0 +1,26 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="500" viewBox="0 0 1200 500">
+  <style>
+    .title{font:700 30px sans-serif;fill:#111}.label{font:600 18px sans-serif;fill:#111}
+    .small{font:15px sans-serif;fill:#333}.box{fill:#fff;stroke:#222;stroke-width:2;rx:6}
+    .frozen{fill:#e9f2ff;stroke:#3976b9}.train{fill:#e4f7f2;stroke:#138878}
+    .flow{fill:#ffe9e5;stroke:#c44b3b}.arrow{stroke:#333;stroke-width:3;fill:none;marker-end:url(#a)}
+  </style>
+  <defs><marker id="a" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto"><path d="M0,0 L9,3 L0,6 Z" fill="#333"/></marker></defs>
+  <text x="600" y="42" text-anchor="middle" class="title">FlexTok Alignment</text>
+  <text x="45" y="145" class="label">Vision</text><text x="45" y="350" class="label">Tactile</text>
+  <rect x="130" y="85" width="140" height="90" class="box frozen"/><text x="200" y="122" text-anchor="middle" class="label">TVL + VAE</text><text x="200" y="150" text-anchor="middle" class="small">frozen</text>
+  <rect x="130" y="290" width="140" height="90" class="box frozen"/><text x="200" y="327" text-anchor="middle" class="label">TVL + VAE</text><text x="200" y="355" text-anchor="middle" class="small">frozen</text>
+  <rect x="330" y="75" width="160" height="110" class="box train"/><text x="410" y="117" text-anchor="middle" class="label">Registers</text><text x="410" y="147" text-anchor="middle" class="small">causal + FSQ</text>
+  <rect x="330" y="280" width="160" height="110" class="box train"/><text x="410" y="322" text-anchor="middle" class="label">Registers</text><text x="410" y="352" text-anchor="middle" class="small">causal + FSQ</text>
+  <rect x="555" y="178" width="150" height="105" class="box"/><text x="630" y="220" text-anchor="middle" class="label">Prefix K</text><text x="630" y="250" text-anchor="middle" class="small">same for pair</text>
+  <rect x="775" y="75" width="150" height="110" class="box flow"/><text x="850" y="117" text-anchor="middle" class="label">Vision flow</text><text x="850" y="147" text-anchor="middle" class="small">masked</text>
+  <rect x="775" y="280" width="150" height="110" class="box flow"/><text x="850" y="322" text-anchor="middle" class="label">Tactile flow</text><text x="850" y="352" text-anchor="middle" class="small">masked</text>
+  <rect x="985" y="178" width="170" height="105" class="box train"/><text x="1070" y="218" text-anchor="middle" class="label">Loss</text><text x="1070" y="248" text-anchor="middle" class="small">flow + alignment</text>
+  <path d="M270 130 H330" class="arrow"/><path d="M270 335 H330" class="arrow"/>
+  <path d="M490 130 C530 130 525 205 555 215" class="arrow"/><path d="M490 335 C530 335 525 255 555 245" class="arrow"/>
+  <path d="M705 215 C740 205 735 130 775 130" class="arrow"/><path d="M705 245 C740 255 735 335 775 335" class="arrow"/>
+  <path d="M925 130 C965 130 955 205 985 215" class="arrow"/><path d="M925 335 C965 335 955 255 985 245" class="arrow"/>
+  <path d="M490 110 C680 35 900 40 1005 178" class="arrow"/>
+  <path d="M490 355 C680 455 900 440 1005 283" class="arrow"/>
+  <text x="630" y="450" text-anchor="middle" class="label">One uniform K per example, shared by its pair</text>
+</svg>

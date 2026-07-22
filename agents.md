@@ -35,7 +35,9 @@ The parent MoT-Bagel repo treats this `tvl/` directory as a nested reference pro
 | `tvl_flextok/README.md` | TVL-FlexTok overview |
 | `tvl_flextok/EXPERIMENT_STATUS.md` | Latest completed runs, exact diagnostic scope, metrics, checkpoints, and reconstruction artifact roots |
 | `tvl_flextok/MULTIMODAL_FUSION_MODEL_AUDIT.md` | Full model audit, multimodal fusion literature review, and LLM/VLA architecture roadmap |
-| `tvl_flextok/train.py` | Main TVL-FlexTok train script for alignment and AR stages; supports both direct script and `python -m tvl_flextok.train` execution |
+| `tvl_flextok/docs/figures/tvl_flextok_full_process.svg` | Complete alignment-training, generation-training, and inference diagram |
+| `tvl_flextok/train.py` | Main TVL-FlexTok train script for alignment and text-conditioned discrete-register generation; supports direct and module execution |
+| `tvl_flextok/visualize_generation.py` | Post-training generation renderer that loads a compact generation checkpoint with current inference code |
 | `tvl_flextok/models/` | Register token, cross-modal alignment, and decoder modules |
 | `tvl_flextok/losses/` | Contrastive, flow-matching, and reconstruction diagnostic utilities |
 | `tvl_flextok/configs/default.yaml` | Default TVL-FlexTok config |
@@ -117,17 +119,22 @@ python tvl_flextok/train.py \
   --output_dir /scratch/$USER/tvl_flextok/runs/flextok_alignment
 ```
 
-TVL-FlexTok reconstruction training:
+TVL-FlexTok text-conditioned register generation:
 
 ```bash
 python tvl_flextok/train.py \
-  --stage ar \
-  --feature_mode sequence \
-  --tokenizer_input vae_tvl \
+  --stage generation \
   --alignment_checkpoint /scratch/$USER/tvl_flextok/runs/flextok_alignment/checkpoint_best_joint.pth \
   --stage1_checkpoint /path/to/stage1.pth \
   --datasets_dir /path/to/data \
-  --output_dir /scratch/$USER/tvl_flextok/runs/flextok_reconstruction
+  --output_dir /scratch/$USER/tvl_flextok/runs/flextok_generation
+```
+
+Corrected post-training generation visualization:
+
+```bash
+tvl_flextok/scripts/submit_slurm.sh generation_vis \
+  GENERATION_CKPT=/path/to/checkpoint_best_generation.pth
 ```
 
 TVL-LLaMA pretraining:
@@ -167,7 +174,7 @@ python tvl_flextok/train.py --help
 - Most training and evaluation commands assume execution either from the relevant subdirectory (`tvl_enc` or `tvl_llama`) or from repo root with import paths adjusted by the script. TVL-FlexTok should use package imports (`tvl_flextok...`, `tvl_enc...`) and support both `python tvl_flextok/train.py` and `python -m tvl_flextok.train`.
 - `tvl_enc.TVL.state_dict()` intentionally omits OpenCLIP weights and saves the tactile side plus scalar heads. Be careful when changing checkpoint loading/saving.
 - `tvl_enc.TVL.forward()` is backward-compatible by default: without overrides it returns normalized pooled features. It now also accepts `feature_mode="pooled" | "sequence" | "both"`.
-- TVL sequence mode returns unpooled patch tokens: OpenCLIP vision patch tokens before final pooling/projection and TIMM tactile ViT patch tokens from `forward_features()`. Text sequence mode is not implemented.
+- TVL sequence mode returns unpooled contextual tokens: OpenCLIP vision/text tokens before final pooling and TIMM tactile ViT patch tokens from `forward_features()`.
 - The OpenCLIP vision/text encoders are frozen by default in Stage 1; the tactile encoder is the primary trainable encoder.
 - `TacVisDataset` is SSVTP; `TacVisDatasetV2` is HCT. The names are legacy and should not be casually renamed.
 - Background subtraction has several code paths. Check `tvl_enc/tacvis.py` and pass `--subtract_background background` only when the dataset provides the expected background files.
@@ -182,18 +189,22 @@ python tvl_flextok/train.py --help
 - Feature reconstruction from register tokens back to frozen TVL encoder features is intentionally disabled. Register tokens are a compact bottleneck and should be free to discard frozen-encoder details that are not useful for alignment/reconstruction.
 - Register modules use causal register self-attention followed by cross-attention to immutable TVL features. Never reintroduce joint input/register self-attention, which leaks suffix information into earlier prefixes.
 - FSQ defaults to levels `[8,8,8,5,5,5]`; `*_code_ids` are the stable consumer interface and `*_all_tokens_full` contains quantized continuous embeddings.
-- `--stage ar` trains teacher-forced cross-modal next-register prediction. `--stage reconstruction` is only a deprecated alias.
-- The latest completed reconstruction diagnostic is documented in `tvl_flextok/EXPERIMENT_STATUS.md`. As of 2026-07-17, `flextok_latent_overfit8_pos_flowft3` is the authoritative run: it memorizes eight static SSVTP validation pairs with a frozen tokenizer and depth-2 flow decoders. Do not present its metrics as held-out or trajectory-level generalization.
-- The authoritative compact checkpoint is `tvl_flextok/logs/runs/flextok_latent_overfit8_pos_flowft3/checkpoints/checkpoint_best_joint.pth`; latest saved grids and JSON metrics are under the sibling `reconstructions/` directory.
-- The phase-3 full-prefix epoch-900 diagnostic reaches 27.62 dB/0.9841 SSIM for vision and 33.98 dB/0.9947 SSIM for tactile. Vision is not strictly prefix-monotonic at `k=4`, and both modalities remain below the frozen VAE round-trip ceiling.
-- Slurm job 9343764 completed successfully and archived phase-3 artifacts. No continuation should be described as pending.
+- `--stage generation` freezes the tokenizer, flow decoders, VAE, and TVL/OpenCLIP encoders. One modality-conditioned causal Transformer predicts discrete FSQ register IDs from frozen contextual text tokens.
+- Register GPT predicts exactly `R` IDs with no EOS class. Training inputs are `[modality BOS, target_id_1, ..., target_id_(R-1)]`; inference feeds each generated ID back before predicting the next. Preserve the empty-sequence-plus-placeholder implementation and its regression test when editing `generate()`.
+- FSQ IDs must be converted back to quantized register embeddings before flow decoding. Registers condition the flow decoder; only the resulting VAE latent is passed to the frozen VAE decoder.
+- Continuous latent-patch autoregression was removed. `--stage reconstruction` and `--stage ar` fail with a migration message; do not restore those objectives as FlexTok generation.
+- Alignment nested dropout samples one prefix length per example uniformly over `1..R`, shares that length across each paired vision/tactile sample, and supplies a padding mask to flow cross-attention.
+- Alignment flow conditioning dropout and classifier-free guidance use a learned null register condition, not all-zero register embeddings.
+- The latest completed alignment reconstruction diagnostic is documented in `tvl_flextok/EXPERIMENT_STATUS.md`. `flextok_latent_overfit8_reg64_flowft3` memorizes eight static SSVTP validation pairs with a 64-register tokenizer and depth-2 flow decoders. Do not present its metrics as held-out or trajectory-level generalization.
+- The authoritative alignment checkpoint is `tvl_flextok/logs/runs/flextok_latent_overfit8_reg64_flowft3/checkpoints/checkpoint_best_joint.pth`; its grids and JSON metrics are under the sibling `reconstructions/` directory.
+- The 64-register phase-3 diagnostic reached best validation flow loss 0.2012. Its epoch-900 full-prefix results are 31.99 dB/0.9942 SSIM for vision and 37.60 dB/0.9977 for tactile; vision gains from `k=32` to `k=64` are small.
 - `tvl_flextok/configs/*.yaml` keys must exactly match argparse destination names. Unknown keys fail fast. Use names such as `blr`, `stage1_checkpoint`, `codec_id`, `flow_depth`, and `output_dir`.
 - Avoid broad formatting-only changes in copied upstream code from MAE, OpenCLIP, ImageBind-LLM, or LLaMA Adapter unless the task is explicitly a cleanup.
 
 ## Validation Notes
 
 - CPU-only quick validation is mainly `python tvl_flextok/test_modules.py`.
-- Current TVL-FlexTok smoke coverage includes FSQ round trips/gradients, suffix-prefix invariance, paired nested dropout, pooled compatibility, latent-flow gradients, causal AR prediction, and strict config rejection.
+- Current TVL-FlexTok smoke coverage includes FSQ round trips/gradients, suffix-prefix invariance, paired per-sample nested dropout, pooled compatibility, masked/null-conditioned latent flow, causal discrete-register GPT generation, checkpoint-metadata configuration, and strict config rejection.
 - For import/entrypoint checks, run `python -m tvl_flextok.train --help` and `python tvl_flextok/train.py --help`.
 - For config checks, load `tvl_flextok/configs/default.yaml` through `load_config_overrides()` and confirm it applies `feature_mode=sequence`, `blr`, `codec_id`, `flow_depth`, and `stage1_checkpoint`.
 - Full Stage 1 and TVL-LLaMA validation require datasets, checkpoints, GPUs, and often LLaMA-2 access.
@@ -210,14 +221,18 @@ The current TVL-FlexTok implementation is an FSQ-discrete register tokenizer ove
 - Vision sequence features use OpenCLIP ViT patch tokens before final pooling/projection.
 - Tactile sequence features use TIMM ViT `forward_features()` with prefix/class tokens removed.
 - TVL-FlexTok training builds modality configs from `args.feature_mode`; sequence dimensions are OpenCLIP visual width for vision and TIMM `num_features` for tactile.
-- Alignment flow reconstruction uses the physically truncated active quantized prefix; do not pass a zero-padded suffix to decoder cross-attention.
+- Alignment flow reconstruction uses full-shaped register tensors with explicit per-example padding masks; zero suffixes alone are not a valid attention mask.
 - The verified frozen VAE cache defaults to `tvl_flextok/logs/models/flextok_vae_c4/`. Training checkpoints are staged under `/scratch/$USER/tvl_flextok/` and archived into `tvl_flextok/logs/runs/<name>/`; never leave the only checkpoint copy on scratch.
+- Full-dataset alignment job `9413754` was cancelled because it preceded the per-sample dropout and masked-flow correction. Never resume or consume it; corrected alignment must start from scratch on one GPU.
+- Corrected full-dataset one-GPU alignment job `9419434` is the accepted replacement. Its persistent artifact destination is `tvl_flextok/logs/runs/flextok_alignment_canonical_full_reg64_1gpu/` after successful completion.
+- Eight-sample generation job `9420033` completed 2,000 epochs with exact token memorization. Its best epoch-1984 checkpoint is `tvl_flextok/logs/runs/flextok_canonical_generation_overfit8_reg64/checkpoints/checkpoint_best_generation.pth`.
+- Never use job `9420033`'s original `generations/epoch_*.png` files as evidence: its resident inference loop duplicated the first ID and omitted the last. Corrected job `9420298` outputs are under the sibling `corrected_visualization/` directory and match the exact-register flow ceiling at `k=64`.
 
 Known validation performed after the architecture update:
 
 ```bash
 python tvl_flextok/test_modules.py
-python -m py_compile tvl_enc/tvl.py tvl_flextok/train.py tvl_flextok/models/cross_modal_alignment.py \
+python -m py_compile tvl_enc/tvl.py tvl_flextok/train.py tvl_flextok/visualize_generation.py tvl_flextok/models/cross_modal_alignment.py \
   tvl_flextok/losses/alignment_loss.py tvl_flextok/losses/reconstruction_loss.py \
   tvl_flextok/test_modules.py tvl_flextok/visualize.py tvl_flextok/visualize_prefix_recon.py \
   tvl_flextok/validate_data.py tvl_flextok/sweep_registers.py tvl_flextok/visualizations/generate_all.py
@@ -225,4 +240,5 @@ python -m tvl_flextok.train --help
 python tvl_flextok/train.py --help
 ```
 
-Dataset-dependent integration tests were not run in this workspace because `./.datasets` was not available.
+Dataset-dependent GPU integration uses the shared SSVTP/HCT materialization at
+`../datasets/tvl_dataset`; do not replace it with a duplicate download.

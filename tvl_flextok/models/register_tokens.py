@@ -1,6 +1,6 @@
 """Ordered register resampler with causal prefixes and finite scalar quantization."""
 
-from typing import Dict, Optional
+from typing import Dict, Optional, Union
 
 import torch
 import torch.nn as nn
@@ -46,7 +46,7 @@ class RegisterTokenModule(nn.Module):
         n_heads: int = 8,
         dropout: float = 0.1,
         nested_dropout: bool = True,
-        nested_dropout_mode: str = "power_of_two",
+        nested_dropout_mode: str = "uniform",
         use_token_type_embed: bool = True,
         fsq_levels=(8, 8, 8, 5, 5, 5),
     ):
@@ -91,9 +91,19 @@ class RegisterTokenModule(nn.Module):
             k *= 2
         return values + [n_registers]
 
-    def sample_k_keep(self) -> int:
-        index = torch.randint(len(self._k_keep_values), ()).item()
-        return self._k_keep_values[index]
+    def sample_k_keep(self, batch_size: Optional[int] = None, device=None):
+        """Sample uniformly over the configured prefix lengths.
+
+        A scalar is retained for inference/backward compatibility. Training
+        callers should provide ``batch_size`` so every example receives an
+        independent prefix length.
+        """
+        if batch_size is None:
+            index = torch.randint(len(self._k_keep_values), ()).item()
+            return self._k_keep_values[index]
+        values = torch.as_tensor(self._k_keep_values, device=device, dtype=torch.long)
+        indices = torch.randint(len(values), (batch_size,), device=device)
+        return values[indices]
 
     def _roles(self) -> torch.Tensor:
         if self.role_embed is None:
@@ -107,7 +117,7 @@ class RegisterTokenModule(nn.Module):
         encoder_features: torch.Tensor,
         apply_nested_dropout: Optional[bool] = None,
         return_full_tokens: bool = False,
-        k_keep: Optional[int] = None,
+        k_keep: Optional[Union[int, torch.Tensor]] = None,
         return_dict: bool = False,
     ):
         if encoder_features.ndim != 3:
@@ -116,7 +126,13 @@ class RegisterTokenModule(nn.Module):
         memory = self.input_proj(encoder_features)
         registers = self.register_tokens.expand(batch, -1, -1) + self.register_pos_embed + self._roles()
         causal_mask = torch.triu(
-            torch.full((self.n_registers, self.n_registers), float("-inf"), device=registers.device), diagonal=1
+            torch.full(
+                (self.n_registers, self.n_registers),
+                float("-inf"),
+                device=registers.device,
+                dtype=registers.dtype,
+            ),
+            diagonal=1,
         )
         for layer in self.layers:
             registers = layer(registers, memory, causal_mask)
@@ -126,11 +142,23 @@ class RegisterTokenModule(nn.Module):
 
         use_dropout = apply_nested_dropout if apply_nested_dropout is not None else self.nested_dropout and self.training
         if k_keep is None:
-            k_keep = self.sample_k_keep() if use_dropout else self.n_registers
-        if not 1 <= k_keep <= self.n_registers:
-            raise ValueError(f"k_keep must be in [1,{self.n_registers}], got {k_keep}")
-        active_mask = torch.arange(self.n_registers, device=registers.device) < k_keep
-        masked = quantized * active_mask.view(1, -1, 1)
+            k_keep = (
+                self.sample_k_keep(batch, registers.device)
+                if use_dropout else
+                torch.full((batch,), self.n_registers, device=registers.device, dtype=torch.long)
+            )
+        elif not torch.is_tensor(k_keep):
+            k_keep = torch.full((batch,), int(k_keep), device=registers.device, dtype=torch.long)
+        else:
+            k_keep = k_keep.to(device=registers.device, dtype=torch.long).reshape(-1)
+            if k_keep.numel() == 1:
+                k_keep = k_keep.expand(batch)
+        if k_keep.shape != (batch,):
+            raise ValueError(f"k_keep must be scalar or shape ({batch},), got {tuple(k_keep.shape)}")
+        if bool(((k_keep < 1) | (k_keep > self.n_registers)).any()):
+            raise ValueError(f"k_keep must be in [1,{self.n_registers}]")
+        active_mask = torch.arange(self.n_registers, device=registers.device)[None, :] < k_keep[:, None]
+        masked = quantized * active_mask.unsqueeze(-1)
 
         result: Dict[str, torch.Tensor] = {
             "continuous": continuous,

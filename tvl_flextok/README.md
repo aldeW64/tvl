@@ -1,116 +1,117 @@
 # TVL-FlexTok
 
-TVL-FlexTok compresses frozen TVL vision and tactile patch sequences into
-ordered, discrete register tokens. The implementation follows the two-stage
-FlexTok training pattern while retaining a cross-modal alignment objective.
+TVL-FlexTok compresses paired vision and tactile inputs into ordered,
+FSQ-discrete register sequences. Its training contract follows FlexTok:
 
-## Architecture
+[Full process SVG](docs/figures/tvl_flextok_full_process.svg) |
+[Full process PNG](docs/figures/tvl_flextok_full_process.png) |
+[Alignment diagram](docs/figures/tvl_flextok_alignment_stage.svg) |
+[Generation diagram](docs/figures/tvl_flextok_generation_stage.svg)
 
-```text
-image -> frozen VAE -> latent patches ----+
-                                          +-> causal register resampler -> FSQ codes
-image -> frozen TVL -> semantic patches --+             |              |
-                                                        |              +-> AR code model
-                                                        +-> latent flow -> frozen VAE -> image
-```
-
-- Registers use causal self-attention and cross-attention to immutable encoder
-  features. A suffix cannot influence an earlier register.
-- Finite scalar quantization uses levels `[8,8,8,5,5,5]`, producing a 64,000
-  token vocabulary without a learned codebook.
-- Paired nested dropout retains the same prefix length for vision and tactile.
-- The leading `n_shared` registers provide a globally gathered CLIP-style
-  contrastive embedding. All retained registers condition reconstruction.
-- A frozen `EPFL-VILAB/flextok_vae_c4` codec maps both modalities to continuous
-  spatial latents. Its latent patches are encoder inputs, and separate modality
-  flow decoders reconstruct those latents before frozen VAE decoding.
-- Feature preservation and frozen-TVL feature reconstruction are intentionally
-  absent; compression may discard irrelevant encoder information.
-
-## Training Stages
-
-`--stage alignment` always optimizes:
+![Complete TVL-FlexTok process](docs/figures/tvl_flextok_full_process.svg)
 
 ```text
-contrastive_weight * global_cross_modal_contrastive
-+ continuous_contrastive_weight * pre_FSQ_cross_modal_contrastive
-+ diversity_weight * differentiable_fsq_anti_collapse
-+ reconstruction_weight * mean(vision_flow, tactile_flow)
+Alignment:  image/tactile -> frozen VAE + frozen TVL -> causal registers -> FSQ
+                                               registers -> rectified flow -> VAE latent
+
+Generation: text -> frozen OpenCLIP text tokens -> shared causal GPT -> FSQ IDs
+                                               FSQ IDs -> register lookup -> rectified flow -> VAE latent
+                                               VAE latent -> frozen VAE decoder -> image
 ```
 
-The diversity term applies only to pre-rounding FSQ scalars. It prevents all
-samples/register positions from collapsing to one discrete code; it does not
-reconstruct or preserve frozen TVL features.
+## Alignment Stage
 
-The pre-FSQ contrastive term is an optimization bridge for the same shared
-register objective, not feature preservation. Flow training drops register
-conditioning on a configurable fraction of samples. Classifier-free guidance
-is available through `--flow_guidance_scale`; it defaults to 1.0 because this
-implementation does not yet reproduce FlexTok's APG norm-guidance algorithm.
+`--stage alignment` jointly trains the modality-specific causal register
+resamplers, FSQ projections, shared-register alignment heads, and separate
+vision/tactile rectified-flow decoders. TVL and the FlexTok VAE are frozen.
 
-`--stage ar` freezes the tokenizer and flow decoders. One teacher-forced causal
-Transformer predicts tactile FSQ register codes from vision registers and
-vision codes from tactile registers. Generated codes are converted back to
-images by the corresponding flow decoder. `--stage reconstruction` remains a
-deprecated alias for `ar`.
+The loss is:
 
-## Outputs
+```text
+contrastive_weight * quantized_shared_register_contrastive
++ continuous_contrastive_weight * pre_FSQ_shared_register_contrastive
++ diversity_weight * pre_FSQ_anti_collapse
++ reconstruction_weight * mean(vision_flow_matching, tactile_flow_matching)
+```
 
-The tokenizer exposes, per modality:
+Every sample independently draws a prefix length uniformly from `1..R`; the
+paired vision and tactile inputs use the same length. Dropped registers are
+masked in flow cross-attention. A learned null condition supports conditioning
+dropout and classifier-free guidance. Frozen-TVL feature preservation is not
+optimized because the registers are intended to discard irrelevant detail.
 
-- `*_continuous_tokens`: pre-quantization ordered registers.
-- `*_all_tokens_full`: quantized full register sequence.
-- `*_all_tokens`: the active nested-dropout prefix with a zero suffix.
-- `*_code_ids`: mixed-radix FSQ IDs in `[0, 64000)`.
-- `*_shared`: normalized retrieval embedding.
+## Generation Stage
 
-Alignment saves `checkpoint_best_flow.pth`,
-`checkpoint_best_retrieval.pth`, and `checkpoint_best_joint.pth`. Checkpoints
-contain tokenizer/flow weights and architecture metadata, but omit frozen TVL
-and VAE weights.
+`--stage generation` freezes the aligned tokenizer, flow decoders, VAE, and
+TVL/OpenCLIP encoders. One modality-conditioned causal Transformer predicts
+the complete sequence of discrete FSQ IDs from contextual OpenCLIP text
+tokens. It predicts exactly `R` IDs; there is no EOS class. During training,
+teacher forcing right-shifts target IDs so position zero receives a
+modality-specific BOS and position `i` receives target ID `i-1`. During
+inference, each generated ID is fed back before predicting the next one. A
+causal mask prevents access to future IDs.
+
+Generated IDs are converted through the frozen FSQ lookup into continuous
+register embeddings. Those registers, not the IDs and not the VAE decoder,
+condition the frozen modality flow decoder. The flow decoder maps noise to a
+VAE latent; only that latent enters the frozen VAE decoder. One generated
+sequence can be truncated to any prefix length before flow decoding.
+
+This stage does not autoregress continuous VAE patches. The former latent-patch
+objective was removed because it was not the FlexTok second stage and its low
+teacher-forced NLL did not produce valid free-running reconstructions.
+
+## Diagnostics
+
+Alignment writes source-conditioned exact reconstructions to
+`reconstructions/`. Generation writes two distinct products:
+
+- `reconstructions/`: targets, frozen-VAE round trips, and flow outputs from
+  ground-truth tokenizer registers.
+- `generations/`: free-running text-to-register outputs at configured prefix
+  lengths.
+
+JSON diagnostics report per-image PSNR/SSIM, prefix curves, VAE ceilings,
+token accuracy/perplexity, and shuffled-text conditioning gaps. Best compact
+checkpoints and visual artifacts are archived under
+`tvl_flextok/logs/runs/<name>/`; full optimizer resume state is periodically
+written as `checkpoint_latest.pth` under `/scratch/$USER/tvl_flextok/`.
+
+Generation panels must be produced with the current autoregressive loop. Job
+`9420033` trained a valid checkpoint, but its in-process panels predate the
+off-by-one inference fix and are not quality evidence. Corrected job `9420298`
+rendered the archived checkpoint under
+`logs/runs/flextok_canonical_generation_overfit8_reg64/corrected_visualization/`.
+Use `visualize_generation.py` or the `generation_vis` Slurm target for future
+checkpoints.
 
 ## Commands
 
 ```bash
 python tvl_flextok/test_modules.py
 
+# One-GPU, full SSVTP+HCT alignment with 64 registers by default.
 tvl_flextok/scripts/submit_slurm.sh alignment
-tvl_flextok/scripts/submit_slurm.sh alignment_4gpu
-tvl_flextok/scripts/submit_slurm.sh alignment \
-  N_REGISTERS=64 N_SHARED=8 RECON_VIS_PREFIXES="1 4 8 16 32 64"
-tvl_flextok/scripts/submit_slurm.sh reconstruction \
+
+# Train text-conditioned register generation from a corrected alignment model.
+tvl_flextok/scripts/submit_slurm.sh generation \
   ALIGNMENT_CKPT=/path/to/checkpoint_best_joint.pth
+
+# Render a completed generation checkpoint with the current inference code.
+tvl_flextok/scripts/submit_slurm.sh generation_vis \
+  GENERATION_CKPT=/path/to/checkpoint_best_generation.pth
 ```
 
-`N_REGISTERS` and `N_SHARED` configure register capacity in both alignment
-Slurm launchers. Increasing the register count requires training a new
-tokenizer; a 32-register checkpoint cannot be strictly warm-started into a
-64-register model because its learned register and position tensors differ.
-
-Direct execution and module execution are both supported:
+Both entrypoint forms are supported:
 
 ```bash
 python tvl_flextok/train.py --help
 python -m tvl_flextok.train --help
 ```
 
-Slurm stdout/stderr use `tvl_flextok/logs/slurm/`; each experiment writes
-reconstruction grids and application logs below `tvl_flextok/logs/runs/`.
-Training stages checkpoints under `/scratch/$USER/tvl_flextok/`, while the
-verified VAE codec cache defaults to `tvl_flextok/logs/models/`. After
-successful training, supplied Slurm scripts move best checkpoints into the
-run's `tvl_flextok/logs/runs/<name>/checkpoints/` folder alongside scalar logs
-and reconstruction artifacts. W&B defaults to offline mode.
-
-Use `--tokenizer_input vae_tvl` (the default) for latent patches plus TVL
-semantic patches, `vae` for the closest original-FlexTok encoder path, or `tvl`
-only as an ablation. Reconstruction grids contain target, direct VAE
-round-trip, zero-register baseline, and every configured register prefix. JSON
-diagnostics report VAE fidelity and whether the flow decoder uses register
-conditioning.
-
-See [MULTIMODAL_FUSION_MODEL_AUDIT.md](MULTIMODAL_FUSION_MODEL_AUDIT.md) for
-the model audit and guidance for future LLM/VLA consumers. See
-[EXPERIMENT_STATUS.md](EXPERIMENT_STATUS.md) for the latest completed runs,
-loss curves, checkpoints, reconstruction metrics, and their interpretation
-limits.
+FSQ defaults to `[8,8,8,5,5,5]` (64,000 IDs). `*_code_ids` is the stable
+discrete interface; `*_all_tokens_full` contains its projected continuous
+embeddings for flow conditioning. See
+[EXPERIMENT_STATUS.md](EXPERIMENT_STATUS.md) for run provenance and
+[MULTIMODAL_FUSION_MODEL_AUDIT.md](MULTIMODAL_FUSION_MODEL_AUDIT.md) for the
+model audit and LLM/VLA integration discussion.

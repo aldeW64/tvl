@@ -4,7 +4,7 @@
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=10
 #SBATCH --mem=32G
-#SBATCH --time=24:00:00
+#SBATCH --time=2-00:00:00
 #SBATCH --output=tvl_flextok/logs/slurm/flextok_align_%j.out
 #SBATCH --error=tvl_flextok/logs/slurm/flextok_align_%j.err
 
@@ -39,11 +39,11 @@ DATASETS_DIR="${DATASETS_DIR:-$DEFAULT_DATASETS_DIR}"
 SCRATCH_ROOT="${SCRATCH_ROOT:-/scratch/${USER:-peilinwu}/tvl_flextok}"
 OUTPUT_DIR="${OUTPUT_DIR:-$SCRATCH_ROOT/runs/flextok_alignment}"
 LOG_NAME="${LOG_NAME:-flextok_alignment}"
-DATASETS="${DATASETS:-ssvtp}"
+DATASETS="${DATASETS:-ssvtp hct}"
 FEATURE_MODE="${FEATURE_MODE:-sequence}"
 TOKENIZER_INPUT="${TOKENIZER_INPUT:-vae_tvl}"
 ENCODER_LATENT_PATCH_SIZE="${ENCODER_LATENT_PATCH_SIZE:-2}"
-N_REGISTERS="${N_REGISTERS:-32}"
+N_REGISTERS="${N_REGISTERS:-64}"
 N_SHARED="${N_SHARED:-8}"
 RECONSTRUCTION_WEIGHT="${RECONSTRUCTION_WEIGHT:-1.0}"
 CONTRASTIVE_WEIGHT="${CONTRASTIVE_WEIGHT:-1.0}"
@@ -52,16 +52,18 @@ DIVERSITY_WEIGHT="${DIVERSITY_WEIGHT:-0.1}"
 DIVERSITY_MIN_STD="${DIVERSITY_MIN_STD:-0.2}"
 RECON_VIS_INTERVAL="${RECON_VIS_INTERVAL:-5}"
 RECON_VIS_SAMPLES="${RECON_VIS_SAMPLES:-4}"
-RECON_VIS_PREFIXES="${RECON_VIS_PREFIXES:-1 4 16 32}"
+RECON_VIS_PREFIXES="${RECON_VIS_PREFIXES:-1 4 16 32 64}"
 FLOW_DEPTH="${FLOW_DEPTH:-8}"
 FLOW_STEPS="${FLOW_STEPS:-25}"
 FLOW_CONDITION_DROPOUT="${FLOW_CONDITION_DROPOUT:-0.1}"
 FLOW_GUIDANCE_SCALE="${FLOW_GUIDANCE_SCALE:-1.0}"
-SAVE_LATEST="${SAVE_LATEST:-0}"
+SAVE_LATEST="${SAVE_LATEST:-1}"
+RESUME_INTERVAL="${RESUME_INTERVAL:-5}"
 OVERFIT_ONE_SAMPLE="${OVERFIT_ONE_SAMPLE:-0}"
 OVERFIT_SAMPLES="${OVERFIT_SAMPLES:-0}"
 EPOCHS="${EPOCHS:-100}"
 BATCH_SIZE="${BATCH_SIZE:-8}"
+ACCUM_ITER="${ACCUM_ITER:-1}"
 NUM_WORKERS="${NUM_WORKERS:-${SLURM_CPUS_PER_TASK:-10}}"
 LR="${LR:-}"
 BLR="${BLR:-3e-4}"
@@ -109,6 +111,7 @@ echo "Datasets dir: $DATASETS_DIR"
 echo "Output dir: $OUTPUT_DIR"
 echo "Feature mode: $FEATURE_MODE"
 echo "Registers: $N_REGISTERS total, $N_SHARED shared"
+echo "Batch size: $BATCH_SIZE x $ACCUM_ITER accumulation steps"
 echo "Flow reconstruction weight: $RECONSTRUCTION_WEIGHT"
 echo "Reconstruction visualization interval: $RECON_VIS_INTERVAL"
 echo "Python: $PYTHON_BIN"
@@ -184,11 +187,13 @@ fi
     --recon_vis_samples "$RECON_VIS_SAMPLES" \
     --recon_vis_prefixes "$RECON_VIS_PREFIXES" \
     "${SAVE_LATEST_ARGS[@]}" \
+    --resume_interval "$RESUME_INTERVAL" \
     "${OVERFIT_ARGS[@]}" \
     "${LR_ARGS[@]}" \
     "${WARM_START_ARGS[@]}" \
     --epochs "$EPOCHS" \
     --batch_size "$BATCH_SIZE" \
+    --accum_iter "$ACCUM_ITER" \
     --blr "$BLR" \
     --warmup_epochs "$WARMUP_EPOCHS" \
     --weight_decay 0.05 \

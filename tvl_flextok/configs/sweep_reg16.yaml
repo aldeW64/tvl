@@ -8,7 +8,7 @@ model:
   model_dropout: 0.1
   feature_mode: "sequence"
   nested_dropout: true
-  nested_dropout_mode: "power_of_two"
+  nested_dropout_mode: "uniform"
   fsq_levels: "8 8 8 5 5 5"
 
 loss:

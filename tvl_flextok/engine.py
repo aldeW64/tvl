@@ -15,13 +15,14 @@ import matplotlib.pyplot as plt
 import torch
 import torch.distributed as dist
 import torch.nn as nn
+import torch.nn.functional as F
 
 from tvl_enc.tacvis import RGB_MEAN, RGB_STD, TAC_MEAN, TAC_STD
 from tvl_enc.tvl import ModalityType
 from tvl_enc.util import lr_sched, misc
 from tvl_flextok.losses.alignment_loss import CrossModalAlignmentLoss
-from tvl_flextok.models.autoregressive_decoder import AutoregressiveDecoder
 from tvl_flextok.models.flow_decoder import FrozenVAECodec, LatentFlowDecoder
+from tvl_flextok.models.register_gpt import TextConditionedRegisterGPT
 
 
 MODALITIES = (ModalityType.VISION, ModalityType.TACTILE)
@@ -58,12 +59,12 @@ def _distributed_mean(value: float, device) -> float:
 
 
 class FlexTokTrainingSystem(nn.Module):
-    def __init__(self, tokenizer, codec, flow_decoders, ar_model=None):
+    def __init__(self, tokenizer, codec, flow_decoders=None, register_gpt=None):
         super().__init__()
         self.tokenizer = tokenizer
         self.codec = codec
         self.flow_decoders = flow_decoders
-        self.ar_model = ar_model
+        self.register_gpt = register_gpt
 
     def encode_latents(self, samples, sample=False):
         return {
@@ -72,8 +73,9 @@ class FlexTokTrainingSystem(nn.Module):
         }
 
     def encode_registers(self, samples, nested_dropout=None, latents=None):
+        modality_samples = {key: samples[key] for key in MODALITIES}
         with torch.no_grad():
-            frozen = self.tokenizer.encode(samples)
+            frozen = self.tokenizer.encode(modality_samples)
             if latents is None and self.tokenizer.alignment_model.tokenizer_input in {"vae", "vae_tvl"}:
                 latents = self.encode_latents(samples, sample=False)
         return self.tokenizer.alignment_model(
@@ -83,7 +85,9 @@ class FlexTokTrainingSystem(nn.Module):
     def forward(self, samples, contrastive_loss=None, stage="alignment"):
         if stage == "alignment":
             return self.alignment_losses(samples, contrastive_loss)
-        return self.ar_losses(samples)
+        if stage == "generation":
+            return self.generation_losses(samples)
+        raise ValueError(f"Unknown training stage: {stage}")
 
     def alignment_losses(self, samples, contrastive_loss):
         with torch.no_grad():
@@ -104,7 +108,8 @@ class FlexTokTrainingSystem(nn.Module):
                 losses[key] = value
         total_flow = output["logit_scale"] * 0
         for modality in MODALITIES:
-            active_registers = output[f"{modality}_all_tokens"][:, :output["k_keep"]]
+            active_registers = output[f"{modality}_all_tokens"]
+            register_padding_mask = ~output[f"{modality}_active_mask"]
             generator = None
             if not self.training:
                 generator = torch.Generator(device=targets[modality].device).manual_seed(
@@ -113,36 +118,89 @@ class FlexTokTrainingSystem(nn.Module):
             flow = self.flow_decoders[modality].flow_loss(
                 targets[modality], active_registers, generator=generator,
                 condition_dropout=self.flow_condition_dropout if self.training else 0.0,
+                register_padding_mask=register_padding_mask,
             )
             losses[f"flow_{modality}"] = flow
             total_flow = total_flow + flow
         losses["flow"] = total_flow / len(MODALITIES)
         for modality in MODALITIES:
-            codes = output[f"{modality}_code_ids"]
+            codes = output[f"{modality}_code_ids"][output[f"{modality}_active_mask"]]
             losses[f"code_utilization_{modality}"] = codes.unique().numel() / max(codes.numel(), 1)
         # Keep every ordered-register parameter in the DDP graph even when a
         # sampled short prefix correctly gives the suffix zero gradient.
         graph_anchor = sum(output[f"{modality}_continuous_tokens"].sum() for modality in MODALITIES) * 0
         return align["total_loss"] + self.reconstruction_weight * losses["flow"] + graph_anchor, losses, output
 
-    def ar_losses(self, samples):
+    @torch.no_grad()
+    def encode_text(self, samples):
+        text = samples[ModalityType.TEXT]
+        if text.ndim == 3 and text.shape[1] == 1:
+            text = text[:, 0]
+        features = self.tokenizer.encode_text(text)
+        return features, text.eq(0)
+
+    def generation_losses(self, samples):
         with torch.no_grad():
-            output = self.encode_registers(samples, nested_dropout=False)
-        max_registers = output["vision_code_ids"].shape[1]
-        prefix_values = self.tokenizer.alignment_model.register_modules["vision"]._k_keep_values
-        k_keep = prefix_values[torch.randint(len(prefix_values), ()).item()] if self.training else max_registers
+            latents = self.encode_latents(samples, sample=False)
+            output = self.encode_registers(samples, nested_dropout=False, latents=latents)
+            text_features, text_padding_mask = self.encode_text(samples)
         losses = {}
-        for source, target in ((ModalityType.VISION, ModalityType.TACTILE),
-                               (ModalityType.TACTILE, ModalityType.VISION)):
-            target_ids = output[f"{target}_code_ids"][:, :k_keep]
-            target_modality = torch.full(
-                (target_ids.shape[0],), MODALITY_IDS[target], device=target_ids.device, dtype=torch.long
+        ce_values = []
+        for modality in MODALITIES:
+            codes = output[f"{modality}_code_ids"]
+            modality_ids = torch.full(
+                (codes.shape[0],), MODALITY_IDS[modality],
+                device=codes.device, dtype=torch.long,
             )
-            losses[f"ar_{source}_to_{target}"] = self.ar_model.loss(
-                output[f"{source}_all_tokens_full"], target_ids, target_modality
+            drop = None
+            if self.training and self.text_condition_dropout > 0:
+                drop = torch.rand(codes.shape[0], device=codes.device) < self.text_condition_dropout
+            ce, accuracy, first_accuracy = self.register_gpt.loss(
+                text_features, codes, modality_ids, text_padding_mask, drop
             )
-        losses["ar"] = sum(losses.values()) / 2
-        return losses["ar"], losses, output
+            losses[f"ce_{modality}"] = ce
+            losses[f"token_accuracy_{modality}"] = accuracy
+            losses[f"first_token_accuracy_{modality}"] = first_accuracy
+            ce_values.append(ce)
+            if not self.training:
+                shuffled = text_features.roll(1, dims=0)
+                shuffled_mask = text_padding_mask.roll(1, dims=0)
+                shuffled_ce, _, shuffled_first = self.register_gpt.loss(
+                    shuffled, codes, modality_ids, shuffled_mask
+                )
+                losses[f"shuffled_text_ce_{modality}"] = shuffled_ce
+                losses[f"text_ce_gap_{modality}"] = shuffled_ce - ce
+                losses[f"shuffled_first_accuracy_{modality}"] = shuffled_first
+        losses["generation"] = sum(ce_values) / len(ce_values)
+        losses["perplexity"] = losses["generation"].detach().clamp(max=20).exp()
+        return losses["generation"], losses, output
+
+
+def load_alignment_stack(system, checkpoint):
+    """Restore alignment weights, permitting only the pre-v4 null-register omission."""
+    system.tokenizer.alignment_model.load_state_dict(
+        checkpoint["alignment_model"], strict=True
+    )
+    if checkpoint.get("format_version", 1) >= 4:
+        system.flow_decoders.load_state_dict(checkpoint["flow_decoders"], strict=True)
+        return
+
+    result = system.flow_decoders.load_state_dict(
+        checkpoint["flow_decoders"], strict=False
+    )
+    allowed_missing = {f"{modality}.null_register" for modality in MODALITIES}
+    unexpected = set(result.unexpected_keys)
+    disallowed_missing = set(result.missing_keys) - allowed_missing
+    if unexpected or disallowed_missing:
+        raise RuntimeError(
+            "Legacy alignment checkpoint is incompatible: "
+            f"missing={sorted(disallowed_missing)}, unexpected={sorted(unexpected)}"
+        )
+    if result.missing_keys:
+        print(
+            "Loaded pre-v4 alignment flow weights; initialized missing learned "
+            f"null registers to zero: {sorted(result.missing_keys)}"
+        )
 
 
 def _build_system(args, build_model: Callable, device):
@@ -161,25 +219,28 @@ def _build_system(args, build_model: Callable, device):
             patch_size=args.flow_patch_size,
         ) for modality in MODALITIES
     }).to(device)
-    quantizer = tokenizer.alignment_model.register_modules[ModalityType.VISION].quantizer
-    ar_model = AutoregressiveDecoder(
-        vocab_size=quantizer.vocab_size,
-        register_dim=args.hidden_dim,
-        hidden_dim=args.ar_hidden_dim,
-        max_registers=args.n_registers,
-        depth=args.ar_depth,
-        n_heads=args.ar_heads,
-    ).to(device) if args.stage == "ar" else None
-    system = FlexTokTrainingSystem(tokenizer, codec, flow_decoders, ar_model).to(device)
+    register_gpt = None
+    if args.stage == "generation":
+        quantizer = tokenizer.alignment_model.register_modules[ModalityType.VISION].quantizer
+        register_gpt = TextConditionedRegisterGPT(
+            vocab_size=quantizer.vocab_size,
+            text_dim=tokenizer.frozen_encoder.clip.transformer.width,
+            hidden_dim=args.gpt_hidden_dim,
+            max_registers=args.n_registers,
+            depth=args.gpt_depth,
+            n_heads=args.gpt_heads,
+            dropout=args.gpt_dropout,
+        ).to(device)
+    system = FlexTokTrainingSystem(tokenizer, codec, flow_decoders, register_gpt).to(device)
     system.reconstruction_weight = args.reconstruction_weight
     system.flow_condition_dropout = args.flow_condition_dropout
+    system.text_condition_dropout = args.text_condition_dropout
 
-    if args.stage == "ar":
+    if args.stage == "generation":
         if not args.alignment_checkpoint or not os.path.isfile(args.alignment_checkpoint):
-            raise FileNotFoundError("--stage ar requires --alignment_checkpoint")
+            raise FileNotFoundError("--stage generation requires --alignment_checkpoint")
         checkpoint = torch.load(args.alignment_checkpoint, map_location="cpu")
-        system.tokenizer.alignment_model.load_state_dict(checkpoint["alignment_model"], strict=True)
-        system.flow_decoders.load_state_dict(checkpoint["flow_decoders"], strict=True)
+        load_alignment_stack(system, checkpoint)
         for parameter in system.tokenizer.parameters():
             parameter.requires_grad = False
         for parameter in system.flow_decoders.parameters():
@@ -209,7 +270,7 @@ def _run_epoch(system, loader, optimizer, scaler, contrastive_loss, device, epoc
         raw.tokenizer.frozen_encoder.eval()
         if args.freeze_tokenizer:
             raw.tokenizer.eval()
-        if args.stage == "ar":
+        if args.stage == "generation":
             raw.tokenizer.eval()
             raw.flow_decoders.eval()
     else:
@@ -233,7 +294,7 @@ def _run_epoch(system, loader, optimizer, scaler, contrastive_loss, device, epoc
                 if args.stage == "alignment":
                     loss, metrics, _ = system(samples, contrastive_loss, "alignment")
                 else:
-                    loss, metrics, _ = system(samples, None, "ar")
+                    loss, metrics, _ = system(samples, None, "generation")
                 scaled_loss = loss / window_size
             if training:
                 scaler.scale(scaled_loss).backward()
@@ -267,23 +328,28 @@ def _compact_state_dict(module):
 def _checkpoint(system, args, epoch, metrics):
     raw = system.module if hasattr(system, "module") else system
     payload = {
-        "format_version": 3,
+        "format_version": 5 if args.stage == "generation" else 4,
         "stage": args.stage,
         "epoch": epoch,
         "metrics": metrics,
         "args": vars(args),
         "alignment_model": _compact_state_dict(raw.tokenizer.alignment_model),
-        "flow_decoders": _compact_state_dict(raw.flow_decoders),
     }
-    if raw.ar_model is not None:
-        payload["ar_model"] = _compact_state_dict(raw.ar_model)
+    if raw.flow_decoders is not None:
+        payload["flow_decoders"] = _compact_state_dict(raw.flow_decoders)
+    if raw.register_gpt is not None:
+        payload["register_gpt"] = _compact_state_dict(raw.register_gpt)
     return payload
 
 
 @torch.no_grad()
 def _save_visualization(system, loader, device, epoch, args):
-    if args.stage != "alignment" or args.recon_vis_interval <= 0 or epoch % args.recon_vis_interval:
+    if args.recon_vis_interval <= 0 or epoch % args.recon_vis_interval:
         return
+    if args.stage not in {"alignment", "generation"}:
+        return
+    if args.stage == "generation":
+        return _save_generation_visualization(system, loader, device, epoch, args)
     raw = system.module if hasattr(system, "module") else system
     raw.eval()
     samples = _move_samples(next(iter(loader)), device)
@@ -300,11 +366,14 @@ def _save_visualization(system, loader, device, epoch, args):
         noise = torch.randn(latent.shape, generator=generator, device=device, dtype=latent.dtype)
         target_pixels = (target + 1) / 2
         vae_pixels = (raw.codec.decode(latent).clamp(-1, 1) + 1) / 2
-        vae_mse = torch.mean((vae_pixels - target_pixels) ** 2)
         full_registers = output[f"{modality}_all_tokens_full"][:target.shape[0]]
+        null_registers, null_mask = raw.flow_decoders[modality]._apply_null_condition(
+            full_registers, None,
+            torch.ones(target.shape[0], device=device, dtype=torch.bool),
+        )
         unconditional = raw.flow_decoders[modality].sample(
-            torch.zeros_like(full_registers), latent.shape[1:], steps=args.flow_steps,
-            noise=noise.clone(), guidance_scale=1.0,
+            null_registers, latent.shape[1:], steps=args.flow_steps,
+            noise=noise.clone(), guidance_scale=1.0, register_padding_mask=null_mask,
         )
         unconditional_pixels = (raw.codec.decode(unconditional).clamp(-1, 1) + 1) / 2
         rows = [("target", target_pixels), ("VAE", vae_pixels), ("uncond", unconditional_pixels)]
@@ -317,19 +386,10 @@ def _save_visualization(system, loader, device, epoch, args):
             )
             decoded = (raw.codec.decode(sample).clamp(-1, 1) + 1) / 2
             rows.append((f"k={k_keep}", decoded))
-            mse = torch.mean((decoded - target_pixels) ** 2)
-            mu_x, mu_y = decoded.mean(), target_pixels.mean()
-            var_x, var_y = decoded.var(correction=0), target_pixels.var(correction=0)
-            covariance = ((decoded - mu_x) * (target_pixels - mu_y)).mean()
-            ssim = ((2 * mu_x * mu_y + 0.01 ** 2) * (2 * covariance + 0.03 ** 2)) / (
-                (mu_x.square() + mu_y.square() + 0.01 ** 2) * (var_x + var_y + 0.03 ** 2)
-            )
             prefix_metrics.append({
                 "k": k_keep,
                 "latent_mse": float(torch.mean((sample - latent) ** 2)),
-                "pixel_mse": float(mse),
-                "psnr": float(-10 * torch.log10(mse.clamp_min(1e-12))),
-                "ssim": float(ssim),
+                **_image_metrics(decoded, target_pixels),
                 "conditioning_delta": float(torch.mean((sample - unconditional) ** 2)),
             })
         figure, axes = plt.subplots(len(rows), target.shape[0], squeeze=False,
@@ -339,25 +399,177 @@ def _save_visualization(system, loader, device, epoch, args):
                 axes[row, col].imshow(image.permute(1, 2, 0).numpy())
                 axes[row, col].axis("off")
                 if col == 0:
-                    axes[row, col].set_ylabel(label)
+                    axes[row, col].text(
+                        0.02, 0.98, label, transform=axes[row, col].transAxes,
+                        va="top", ha="left", fontsize=9,
+                        bbox={"facecolor": "white", "alpha": 0.85, "edgecolor": "none"},
+                    )
         figure.tight_layout()
         figure.savefig(output_dir / f"epoch_{epoch:04d}_{modality}.png", dpi=140)
         plt.close(figure)
         for index, metric in enumerate(prefix_metrics):
             metric["monotonic_vs_previous"] = index == 0 or metric["latent_mse"] <= prefix_metrics[index - 1]["latent_mse"]
+        shared_count = min(args.n_shared, full_registers.shape[1])
+        ablations = {}
+        for name, keep_slice in (
+            ("shared_only", slice(0, shared_count)),
+            ("private_only", slice(shared_count, full_registers.shape[1])),
+        ):
+            if keep_slice.start == keep_slice.stop:
+                continue
+            padding_mask = torch.ones(
+                full_registers.shape[:2], device=device, dtype=torch.bool
+            )
+            padding_mask[:, keep_slice] = False
+            ablated = raw.flow_decoders[modality].sample(
+                full_registers, latent.shape[1:], steps=args.flow_steps,
+                noise=noise.clone(), guidance_scale=args.flow_guidance_scale,
+                register_padding_mask=padding_mask,
+            )
+            ablated_pixels = (raw.codec.decode(ablated).clamp(-1, 1) + 1) / 2
+            ablations[name] = {
+                "latent_mse": float(torch.mean((ablated - latent) ** 2)),
+                **_image_metrics(ablated_pixels, target_pixels),
+            }
+        code_ids = output[f"{modality}_code_ids"][:target.shape[0]]
         diagnostics = {
             "flow_guidance_scale": args.flow_guidance_scale,
-            "vae_roundtrip": {
-                "pixel_mse": float(vae_mse),
-                "psnr": float(-10 * torch.log10(vae_mse.clamp_min(1e-12))),
-            },
+            "vae_roundtrip": _image_metrics(vae_pixels, target_pixels),
             "unconditioned": {
                 "latent_mse": float(torch.mean((unconditional - latent) ** 2)),
-                "pixel_mse": float(torch.mean((unconditional_pixels - target_pixels) ** 2)),
+                **_image_metrics(unconditional_pixels, target_pixels),
             },
+            "shared_private_ablation": ablations,
+            "unique_codes_per_register": [
+                int(code_ids[:, index].unique().numel())
+                for index in range(code_ids.shape[1])
+            ],
             "prefixes": prefix_metrics,
         }
         with open(output_dir / f"epoch_{epoch:04d}_{modality}.json", "w", encoding="utf-8") as handle:
+            json.dump(diagnostics, handle, indent=2)
+
+
+def _image_metrics(prediction: torch.Tensor, target: torch.Tensor):
+    mse_per_image = (prediction - target).square().flatten(1).mean(1)
+    psnr = -10 * torch.log10(mse_per_image.clamp_min(1e-12))
+    channels = prediction.shape[1]
+    coords = torch.arange(11, device=prediction.device, dtype=prediction.dtype) - 5
+    kernel = torch.exp(-(coords.square()) / (2 * 1.5 ** 2))
+    kernel = (kernel / kernel.sum())[:, None] * (kernel / kernel.sum())[None, :]
+    kernel = kernel.expand(channels, 1, 11, 11)
+    mu_x = F.conv2d(prediction, kernel, padding=5, groups=channels)
+    mu_y = F.conv2d(target, kernel, padding=5, groups=channels)
+    sigma_x = F.conv2d(prediction.square(), kernel, padding=5, groups=channels) - mu_x.square()
+    sigma_y = F.conv2d(target.square(), kernel, padding=5, groups=channels) - mu_y.square()
+    covariance = F.conv2d(prediction * target, kernel, padding=5, groups=channels) - mu_x * mu_y
+    ssim = ((2 * mu_x * mu_y + 0.01 ** 2) * (2 * covariance + 0.03 ** 2)) / (
+        (mu_x.square() + mu_y.square() + 0.01 ** 2)
+        * (sigma_x + sigma_y + 0.03 ** 2)
+    )
+    return {
+        "pixel_mse": float(mse_per_image.mean()),
+        "psnr": float(psnr.mean()),
+        "ssim": float(ssim.flatten(1).mean(1).mean()),
+    }
+
+
+def _save_image_grid(path: Path, rows):
+    count = rows[0][1].shape[0]
+    figure, axes = plt.subplots(
+        len(rows), count, squeeze=False, figsize=(2.2 * count, 2.2 * len(rows))
+    )
+    for row, (label, images) in enumerate(rows):
+        for column, image in enumerate(images.float().cpu()):
+            axes[row, column].imshow(image.permute(1, 2, 0).numpy())
+            axes[row, column].axis("off")
+            if column == 0:
+                axes[row, column].text(
+                    0.02, 0.98, label, transform=axes[row, column].transAxes,
+                    va="top", ha="left", fontsize=9,
+                    bbox={"facecolor": "white", "alpha": 0.85, "edgecolor": "none"},
+                )
+    figure.tight_layout()
+    figure.savefig(path, dpi=140)
+    plt.close(figure)
+
+
+@torch.no_grad()
+def _save_generation_visualization(system, loader, device, epoch, args):
+    raw = system.module if hasattr(system, "module") else system
+    raw.eval()
+    samples = _move_samples(next(iter(loader)), device)
+    sample_count = min(args.recon_vis_samples, samples[ModalityType.VISION].shape[0])
+    samples = {key: value[:sample_count] for key, value in samples.items()}
+    latents = raw.encode_latents(samples, sample=False)
+    register_output = raw.encode_registers(samples, nested_dropout=False, latents=latents)
+    text_features, text_padding_mask = raw.encode_text(samples)
+    requested = [int(value) for value in str(args.recon_vis_prefixes).replace(",", " ").split()]
+    prefixes = sorted({value for value in requested if 1 <= value <= args.n_registers})
+    if args.n_registers not in prefixes:
+        prefixes.append(args.n_registers)
+    reconstruction_dir = Path(args.log_dir) / "reconstructions"
+    generation_dir = Path(args.log_dir) / "generations"
+    reconstruction_dir.mkdir(parents=True, exist_ok=True)
+    generation_dir.mkdir(parents=True, exist_ok=True)
+
+    for modality in MODALITIES:
+        target = (_pixels_for_codec(samples[modality], modality) + 1) / 2
+        vae = (raw.codec.decode(latents[modality]).clamp(-1, 1) + 1) / 2
+        noise_generator = torch.Generator(device=device).manual_seed(args.seed + MODALITY_IDS[modality])
+        noise = torch.randn(
+            latents[modality].shape, device=device, dtype=latents[modality].dtype,
+            generator=noise_generator,
+        )
+        gt_registers = register_output[f"{modality}_all_tokens_full"]
+        exact_latent = raw.flow_decoders[modality].sample(
+            gt_registers, latents[modality].shape[1:], steps=args.flow_steps,
+            noise=noise.clone(), guidance_scale=args.flow_guidance_scale,
+        )
+        exact = (raw.codec.decode(exact_latent).clamp(-1, 1) + 1) / 2
+        _save_image_grid(
+            reconstruction_dir / f"epoch_{epoch:04d}_{modality}.png",
+            [("target", target), ("VAE", vae), (f"exact k={args.n_registers}", exact)],
+        )
+
+        modality_ids = torch.full(
+            (sample_count,), MODALITY_IDS[modality], device=device, dtype=torch.long
+        )
+        generated_codes = raw.register_gpt.generate(
+            text_features, modality_ids, text_padding_mask,
+            max_tokens=args.n_registers,
+            temperature=args.generation_temperature,
+            top_k=args.generation_top_k,
+            guidance_scale=args.generation_guidance_scale,
+            sample=True,
+            generator=torch.Generator(device=device).manual_seed(args.seed + 100 + MODALITY_IDS[modality]),
+        )
+        quantizer = raw.tokenizer.alignment_model.register_modules[modality].quantizer
+        generated_registers = quantizer.codes_to_quantized(generated_codes)
+        generated_rows = [("target", target)]
+        prefix_diagnostics = []
+        for prefix in prefixes:
+            generated_latent = raw.flow_decoders[modality].sample(
+                generated_registers[:, :prefix], latents[modality].shape[1:],
+                steps=args.flow_steps, noise=noise.clone(),
+                guidance_scale=args.flow_guidance_scale,
+            )
+            generated_pixels = (raw.codec.decode(generated_latent).clamp(-1, 1) + 1) / 2
+            generated_rows.append((f"text k={prefix}", generated_pixels))
+            prefix_diagnostics.append({"k": prefix, **_image_metrics(generated_pixels, target)})
+        _save_image_grid(
+            generation_dir / f"epoch_{epoch:04d}_{modality}.png", generated_rows
+        )
+        diagnostics = {
+            "kind": "text_to_discrete_registers_to_flow",
+            "text_token_ids": samples[ModalityType.TEXT].squeeze(1).cpu().tolist(),
+            "exact_reconstruction": _image_metrics(exact, target),
+            "vae_roundtrip": _image_metrics(vae, target),
+            "generated_prefixes": prefix_diagnostics,
+        }
+        with open(
+            generation_dir / f"epoch_{epoch:04d}_{modality}.json", "w", encoding="utf-8"
+        ) as handle:
             json.dump(diagnostics, handle, indent=2)
 
 
@@ -418,6 +630,8 @@ def run_training(args, build_datasets: Callable, build_model: Callable, preproce
         raw.tokenizer.eval()
         print("Frozen tokenizer; optimizing reconstruction flow decoders only")
     params = _optimizer_parameters(raw, args.weight_decay)
+    trainable_parameters = sum(parameter.numel() for parameter in raw.parameters() if parameter.requires_grad)
+    print(f"Trainable parameters: {trainable_parameters:,}")
     effective_batch = args.batch_size * args.accum_iter * misc.get_world_size()
     args.lr = args.lr or args.blr * effective_batch / 256
     optimizer = torch.optim.AdamW(params, lr=args.lr, betas=(0.9, 0.95))
@@ -430,22 +644,30 @@ def run_training(args, build_datasets: Callable, build_model: Callable, preproce
         diversity_min_std=args.diversity_min_std,
     )
 
-    best = {"flow": math.inf, "retrieval": math.inf, "joint": math.inf, "ar": math.inf}
+    best = {
+        "flow": math.inf, "retrieval": math.inf, "joint": math.inf,
+        "generation": math.inf,
+    }
     if args.resume:
         resume = torch.load(args.resume, map_location="cpu")
         if resume.get("stage") != args.stage:
             raise ValueError(f"Resume stage {resume.get('stage')} does not match {args.stage}")
         saved_args = resume.get("args", {})
-        for key in (
-            "n_registers", "n_shared", "hidden_dim", "fsq_levels", "flow_depth",
+        architecture_keys = [
+            "n_registers", "n_shared", "hidden_dim", "fsq_levels",
             "tokenizer_input", "encoder_latent_patch_size",
-        ):
+        ]
+        architecture_keys += ["flow_depth"] if args.stage == "alignment" else [
+            "gpt_hidden_dim", "gpt_depth", "gpt_heads",
+        ]
+        for key in architecture_keys:
             if str(saved_args.get(key)) != str(getattr(args, key)):
                 raise ValueError(f"Resume architecture mismatch for {key}")
         raw.tokenizer.alignment_model.load_state_dict(resume["alignment_model"])
-        raw.flow_decoders.load_state_dict(resume["flow_decoders"])
-        if raw.ar_model is not None:
-            raw.ar_model.load_state_dict(resume["ar_model"])
+        if raw.flow_decoders is not None:
+            raw.flow_decoders.load_state_dict(resume["flow_decoders"])
+        if raw.register_gpt is not None:
+            raw.register_gpt.load_state_dict(resume["register_gpt"])
         optimizer.load_state_dict(resume["optimizer"])
         scaler.load_state_dict(resume["scaler"])
         best.update(resume.get("best", {}))
@@ -468,7 +690,7 @@ def run_training(args, build_datasets: Callable, build_model: Callable, preproce
                     "joint": val_metrics["flow"] - 0.01 * val_metrics.get("acc1", 0.0),
                 }
             else:
-                candidates = {"ar": val_metrics["ar"]}
+                candidates = {"generation": val_metrics["generation"]}
             improved_names = []
             for name, score in candidates.items():
                 comparison = score
@@ -489,22 +711,26 @@ def run_training(args, build_datasets: Callable, build_model: Callable, preproce
                     except OSError:
                         shutil.copyfile(temporary, destination)
                 temporary.unlink(missing_ok=True)
-            if args.resume_interval > 0 and (epoch + 1) % args.resume_interval == 0:
-                scratch = Path(os.environ.get("SLURM_TMPDIR", "/tmp")) / "tvl_flextok" / os.environ.get("SLURM_JOB_ID", "local")
-                scratch.mkdir(parents=True, exist_ok=True)
+            if args.save_latest and (
+                args.resume_interval <= 0 or (epoch + 1) % args.resume_interval == 0
+            ):
                 resume_payload = {
                     "stage": args.stage,
                     "epoch": epoch,
                     "args": vars(args),
                     "best": best,
                     "alignment_model": raw.tokenizer.alignment_model.state_dict(),
-                    "flow_decoders": raw.flow_decoders.state_dict(),
                     "optimizer": optimizer.state_dict(),
                     "scaler": scaler.state_dict(),
                 }
-                if raw.ar_model is not None:
-                    resume_payload["ar_model"] = raw.ar_model.state_dict()
-                torch.save(resume_payload, scratch / "checkpoint_resume.pth")
+                if raw.flow_decoders is not None:
+                    resume_payload["flow_decoders"] = raw.flow_decoders.state_dict()
+                if raw.register_gpt is not None:
+                    resume_payload["register_gpt"] = raw.register_gpt.state_dict()
+                output_dir = Path(args.output_dir)
+                temporary = output_dir / ".checkpoint_latest_tmp.pth"
+                torch.save(resume_payload, temporary)
+                os.replace(temporary, output_dir / "checkpoint_latest.pth")
             print(f"Epoch {epoch}: train={train_metrics} val={val_metrics}")
         if args.distributed:
             dist.barrier()

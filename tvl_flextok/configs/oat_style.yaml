@@ -3,7 +3,7 @@
 # Incorporates insights from Ordered Action Tokenization (OAT):
 #   - Role embeddings for alignment-leading versus suffix registers
 #   - Contrastive alignment with mandatory flow reconstruction
-#   - Nested dropout with power-of-two schedule
+#   - Per-sample uniform nested dropout
 #
 # This config uses paired nested dropout and flow reconstruction.
 #
@@ -18,14 +18,14 @@ model:
   model_dropout: 0.1
   feature_mode: "sequence"
   nested_dropout: true
-  nested_dropout_mode: "power_of_two"
+  nested_dropout_mode: "uniform"
   fsq_levels: "8 8 8 5 5 5"
 
 loss:
   contrastive_weight: 1.0
   reconstruction_weight: 1.0
 
-reconstruction:
+generation:
   codec_id: "EPFL-VILAB/flextok_vae_c4"
   flow_hidden_dim: 512
   flow_depth: 8

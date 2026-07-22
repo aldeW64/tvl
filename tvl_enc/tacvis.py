@@ -398,7 +398,7 @@ def load_text(
         words = keywords
     if len(words) == 1:
         text += words[0]
-    elif len(words) == 1:
+    elif len(words) == 2:
         text += f"{words[0]} and {words[1]}"
     else:
         text += ", ".join(words[i] for i in range(len(words) - 1)) + f", and {words[-1]}"
@@ -427,6 +427,7 @@ class TacVisDatasetV2(Dataset):
                  device: str = 'cpu', rgb_size=[224, 224], tac_size=[224, 224], im_scale_range=[.12, .18], randomize_crop=False,
                  use_not_contact=False, shuffle_text : bool = False, text_prompt="This image gives tactile feelings of ", 
                  replace_synonyms=False, keep_k_synonyms=None, percent_not_contact=0.1,
+                 text_random_subset: bool = True,
                  ):
         self.rgb_size = rgb_size
         self.tac_size = tac_size
@@ -436,6 +437,7 @@ class TacVisDatasetV2(Dataset):
         self.keep_k_synonyms = keep_k_synonyms # TODO set this up for tacvis-v2 
         self.text_prompt = text_prompt 
         self.shuffle_text = shuffle_text
+        self.text_random_subset = text_random_subset
         print("data_dir: ", root_dir)
         assert split in ["train", "val", "test"], "split must be either train, val, or test"
         print("split: ", split)
@@ -538,7 +540,10 @@ class TacVisDatasetV2(Dataset):
         using a placeholder so that it can be easily filtered
         """
         if self.paths["text"][index] is not None:
-            return load_text(self.paths["text"][index], prompt=self.text_prompt, shuffle=self.shuffle_text)
+            return load_text(
+                self.paths["text"][index], prompt=self.text_prompt,
+                shuffle=self.shuffle_text, random_subset=self.text_random_subset,
+            )
         else:
             return torch.zeros(1, 77, dtype=torch.long)
     
@@ -560,7 +565,8 @@ class TacVisDataset(Dataset):
                  split: str = 'train', train_size: float = 0.9, random_seed: int = 42, 
                  modality_types = [ModalityType.VISION, ModalityType.TACTILE, ModalityType.TEXT],
                  device: str = 'cpu', rgb_size=[224, 224], tac_size=[224, 224], im_scale_range=[.12, .18], 
-                 shuffle_text : bool = False, text_prompt="This image gives tactile feelings of ", replace_synonyms=False, keep_k_synonyms=None,):
+                 shuffle_text : bool = False, text_prompt="This image gives tactile feelings of ", replace_synonyms=False,
+                 keep_k_synonyms=None, text_random_subset: bool = True,):
         # assert ModalityType.TEXT not in modality_types, "currently do not support TEXT"
         self.rgb_size = rgb_size
         self.tac_size = tac_size
@@ -574,6 +580,7 @@ class TacVisDataset(Dataset):
         self.modality_types = modality_types
         self.shuffle_text = shuffle_text
         self.text_prompt = text_prompt
+        self.text_random_subset = text_random_subset
         self.replace_synonyms = replace_synonyms
         print("data_dir: ", root_dir)
         print("split: ", split)
@@ -659,8 +666,14 @@ class TacVisDataset(Dataset):
     
     def load_text_data(self, path: str):
         if self.replace_synonyms:
-            return load_text_data(path, shuffle=self.shuffle_text, prompt=self.text_prompt, synonyms_dict=self.synonyms)
-        return load_text_data(path, shuffle=self.shuffle_text, prompt=self.text_prompt)
+            return load_text_data(
+                path, shuffle=self.shuffle_text, prompt=self.text_prompt,
+                random_subset=self.text_random_subset, synonyms_dict=self.synonyms,
+            )
+        return load_text_data(
+            path, shuffle=self.shuffle_text, prompt=self.text_prompt,
+            random_subset=self.text_random_subset,
+        )
 
     def __getitem__(self, index):
         img_path = self.paths[index]

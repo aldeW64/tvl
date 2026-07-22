@@ -142,6 +142,16 @@ class TVL(nn.Module):
             x = x[:, 1:, :]
         return x
 
+    def _encode_openclip_text_sequence(self, text: torch.Tensor) -> torch.Tensor:
+        """Return contextual OpenCLIP text tokens before EOT pooling/projection."""
+        clip = self.clip
+        x = clip.token_embedding(text).to(clip.token_embedding.weight.dtype)
+        x = x + clip.positional_embedding[:x.shape[1]].to(x.dtype)
+        x = x.permute(1, 0, 2)
+        x = clip.transformer(x, attn_mask=clip.attn_mask)
+        x = x.permute(1, 0, 2)
+        return clip.ln_final(x)
+
     def _format_feature_output(
         self,
         pooled: Optional[torch.Tensor],
@@ -182,11 +192,16 @@ class TVL(nn.Module):
                 tactile_sequence = self._encode_tactile_sequence(input_dict[ModalityType.TACTILE])
             out_dict[ModalityType.TACTILE] = self._format_feature_output(tactile_pooled, tactile_sequence, feature_mode)
         if ModalityType.TEXT in input_dict.keys():
-            if feature_mode == "sequence":
-                raise NotImplementedError("Text sequence features are not implemented for TVL feature_mode='sequence'")
             with torch.no_grad():
-                text_features = self.clip.encode_text(input_dict[ModalityType.TEXT], normalize=True)
-            out_dict[ModalityType.TEXT] = self._format_feature_output(text_features, None, feature_mode)
+                text_pooled = None
+                text_sequence = None
+                if feature_mode in {"pooled", "both"}:
+                    text_pooled = self.clip.encode_text(input_dict[ModalityType.TEXT], normalize=True)
+                if feature_mode in {"sequence", "both"}:
+                    text_sequence = self._encode_openclip_text_sequence(input_dict[ModalityType.TEXT])
+            out_dict[ModalityType.TEXT] = self._format_feature_output(
+                text_pooled, text_sequence, feature_mode
+            )
         out_dict["logit_scale"] = self.logit_scale.exp()
         if self.logit_bias is not None:
             out_dict["logit_bias"] = self.logit_bias

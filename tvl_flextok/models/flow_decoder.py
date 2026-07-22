@@ -64,11 +64,18 @@ class FlowTransformerBlock(nn.Module):
     def _modulate(x, shift, scale):
         return x * (1 + scale[:, None]) + shift[:, None]
 
-    def forward(self, x: torch.Tensor, memory: torch.Tensor, condition: torch.Tensor) -> torch.Tensor:
+    def forward(
+        self, x: torch.Tensor, memory: torch.Tensor, condition: torch.Tensor,
+        memory_padding_mask: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
         shift1, scale1, gate1, shift2, scale2, gate2 = self.modulation(condition).chunk(6, dim=-1)
         q = self._modulate(self.norm1(x), shift1, scale1)
         x = x + gate1[:, None] * self.self_attn(q, q, q, need_weights=False)[0]
-        x = x + self.cross_attn(self.norm2(x), self.memory_norm(memory), self.memory_norm(memory), need_weights=False)[0]
+        normalized_memory = self.memory_norm(memory)
+        x = x + self.cross_attn(
+            self.norm2(x), normalized_memory, normalized_memory,
+            key_padding_mask=memory_padding_mask, need_weights=False,
+        )[0]
         x = x + gate2[:, None] * self.ffn(self._modulate(self.norm3(x), shift2, scale2))
         return x
 
@@ -93,6 +100,7 @@ class LatentFlowDecoder(nn.Module):
         patch_dim = latent_channels * patch_size * patch_size
         self.patch_in = nn.Conv2d(latent_channels, hidden_dim, patch_size, stride=patch_size)
         self.register_proj = nn.Linear(register_dim, hidden_dim)
+        self.null_register = nn.Parameter(torch.zeros(1, 1, register_dim))
         self.time_mlp = nn.Sequential(nn.Linear(hidden_dim, hidden_dim * 4), nn.SiLU(), nn.Linear(hidden_dim * 4, hidden_dim))
         self.blocks = nn.ModuleList([FlowTransformerBlock(hidden_dim, n_heads, dropout) for _ in range(depth)])
         self.final_norm = nn.LayerNorm(hidden_dim)
@@ -108,7 +116,29 @@ class LatentFlowDecoder(nn.Module):
         patches = patches.view(b, height, width, p, p, c)
         return patches.permute(0, 5, 1, 3, 2, 4).reshape(b, c, height * p, width * p)
 
-    def forward(self, x_t: torch.Tensor, t: torch.Tensor, registers: torch.Tensor) -> torch.Tensor:
+    def _apply_null_condition(
+        self, registers: torch.Tensor, register_padding_mask: Optional[torch.Tensor],
+        drop_mask: torch.Tensor,
+    ):
+        if register_padding_mask is None:
+            register_padding_mask = torch.zeros(
+                registers.shape[:2], device=registers.device, dtype=torch.bool
+            )
+        if not bool(drop_mask.any()):
+            return registers, register_padding_mask
+        registers = registers.clone()
+        register_padding_mask = register_padding_mask.clone()
+        registers[drop_mask] = self.null_register.to(registers.dtype).expand(
+            int(drop_mask.sum()), registers.shape[1], -1
+        )
+        register_padding_mask[drop_mask] = True
+        register_padding_mask[drop_mask, 0] = False
+        return registers, register_padding_mask
+
+    def forward(
+        self, x_t: torch.Tensor, t: torch.Tensor, registers: torch.Tensor,
+        register_padding_mask: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
         patches = self.patch_in(x_t)
         h, w = patches.shape[-2:]
         x = patches.flatten(2).transpose(1, 2)
@@ -119,7 +149,7 @@ class LatentFlowDecoder(nn.Module):
         )
         condition = self.time_mlp(timestep_embedding(t, self.hidden_dim))
         for block in self.blocks:
-            x = block(x, memory, condition)
+            x = block(x, memory, condition, register_padding_mask)
         return self._unpatchify(self.patch_out(self.final_norm(x)), h, w)
 
     def flow_loss(
@@ -128,6 +158,7 @@ class LatentFlowDecoder(nn.Module):
         registers: torch.Tensor,
         generator: Optional[torch.Generator] = None,
         condition_dropout: float = 0.0,
+        register_padding_mask: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         noise = torch.randn(
             target_latents.shape, device=target_latents.device,
@@ -140,11 +171,15 @@ class LatentFlowDecoder(nn.Module):
         x_t = noise + t[:, None, None, None] * (target_latents - noise)
         target_velocity = target_latents - noise
         if condition_dropout > 0:
-            keep = torch.rand(
+            drop = torch.rand(
                 registers.shape[0], device=registers.device, generator=generator
-            ) >= condition_dropout
-            registers = registers * keep[:, None, None].to(registers.dtype)
-        return F.mse_loss(self(x_t, t, registers), target_velocity)
+            ) < condition_dropout
+            registers, register_padding_mask = self._apply_null_condition(
+                registers, register_padding_mask, drop
+            )
+        return F.mse_loss(
+            self(x_t, t, registers, register_padding_mask), target_velocity
+        )
 
     @torch.no_grad()
     def sample(
@@ -154,6 +189,7 @@ class LatentFlowDecoder(nn.Module):
         steps: int = 25,
         noise: Optional[torch.Tensor] = None,
         guidance_scale: float = 1.0,
+        register_padding_mask: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         x = noise if noise is not None else torch.randn(
             registers.shape[0], *latent_shape, device=registers.device, dtype=registers.dtype
@@ -161,11 +197,15 @@ class LatentFlowDecoder(nn.Module):
         dt = 1.0 / steps
         for step in range(steps):
             t = torch.full((x.shape[0],), step / steps, device=x.device, dtype=x.dtype)
-            conditional = self(x, t, registers)
+            conditional = self(x, t, registers, register_padding_mask)
             if guidance_scale == 1.0:
                 velocity = conditional
             else:
-                unconditional = self(x, t, torch.zeros_like(registers))
+                null_registers, null_mask = self._apply_null_condition(
+                    registers, register_padding_mask,
+                    torch.ones(registers.shape[0], device=registers.device, dtype=torch.bool),
+                )
+                unconditional = self(x, t, null_registers, null_mask)
                 velocity = unconditional + guidance_scale * (conditional - unconditional)
             x = x + dt * velocity
         return x

@@ -109,6 +109,8 @@ We provide tactile encoder training scripts in [tvl_enc](tvl_enc/README.md), Fle
 
 The `tvl_flextok/` package is an experimental FlexTok-style tokenizer over frozen TVL sequence features and frozen VAE latent patches. It trains ordered, FSQ-discrete register bottlenecks with shared-token contrastive alignment and mandatory rectified-flow reconstruction in frozen VAE latent space. VAE-decoded prefix grids are reconstruction diagnostics; feature reconstruction back to frozen TVL encoder features is intentionally disabled so the register tokens can compact the input and discard unnecessary encoder details. Current experiment status and artifact paths are recorded in [tvl_flextok/EXPERIMENT_STATUS.md](tvl_flextok/EXPERIMENT_STATUS.md).
 
+![Complete TVL-FlexTok process](tvl_flextok/docs/figures/tvl_flextok_full_process.svg)
+
 ## License
 This project is under the Apache 2.0 license. See [LICENSE](LICENSE.txt) for details.
 

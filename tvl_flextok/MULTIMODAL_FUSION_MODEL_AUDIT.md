@@ -1,6 +1,6 @@
 # TVL-FlexTok Model Audit and Multimodal Fusion Review
 
-Date: 2026-07-17
+Date: 2026-07-22
 
 ## Executive Conclusion
 
@@ -27,7 +27,7 @@ list. Future consumers should use the documented register-code interface.
 | Embedding flow matching | Remove | Transport between trainable pooled embeddings is not FlexTok reconstruction and admits collapse. |
 | VAE-latent rectified flow | Always train in alignment | It directly tests and trains recoverability of original modality inputs from register prefixes. |
 | Parallel image-query decoder | Remove from training | Causal query attention did not make simultaneous pixel prediction autoregressive. |
-| AR stage | Predict target FSQ register IDs | This is a genuine next-token objective and matches the interface future multimodal models consume. |
+| Generation stage | Predict target FSQ register IDs | This is a genuine next-token objective and matches the interface future multimodal models consume. |
 
 ## Losses
 
@@ -48,9 +48,17 @@ it to reproduce frozen TVL features.
 
 ### Autoregressive code loss
 
-The AR stage minimizes next-token cross entropy over target-modality FSQ IDs
-plus EOS. It is teacher forced and causally masked. Vision registers condition
-tactile code prediction and tactile registers condition vision prediction.
+The generation stage minimizes next-token cross entropy over FSQ IDs. The
+sequence has fixed length `R` and no EOS class. A single shared GPT is
+conditioned on contextual OpenCLIP caption tokens and a vision/tactile modality
+BOS. It is teacher forced with target IDs shifted right during training,
+causally masked, and autoregressive over its own previously generated IDs at
+inference. The GPT does not consume registers from the opposite modality.
+
+After generation, each FSQ ID is mapped back to its quantized register
+embedding. A selected register prefix conditions the frozen modality flow
+decoder, which produces a VAE latent from noise. The frozen VAE decoder sees
+only that latent.
 
 ## Diagnostics and Remaining Risks
 
@@ -64,14 +72,15 @@ tactile code prediction and tactile registers condition vision prediction.
   register compression.
 - HCT should use episode-level rather than frame-level splits before reporting
   final generalization metrics.
-- The current paired AR objective is a representation probe. A future LLM/VLA
-  may instead predict the same FSQ IDs from language, state, or action context.
+- The current text-conditioned GPT is a representation probe. A future LLM/VLA
+  may predict the same FSQ IDs from language, state, action, or temporal
+  observation context.
 - Flow sampling cost grows with integration steps; report quality and latency
   together.
 
 ## Current Empirical Status
 
-The completed implementation diagnostic uses eight distinct static SSVTP
+The completed alignment implementation diagnostic uses eight distinct static SSVTP
 validation pairs for both training and evaluation. It is a memorization test,
 not evidence of held-out or trajectory-level generalization. After 300 joint
 alignment updates and three 1,000-update flow-only continuations with a frozen
@@ -84,6 +93,21 @@ not strictly monotonic because `k=4` is slightly worse than `k=1`, and visible
 latent-grid texture remains. These results verify register-conditioned
 reconstruction and noncollapsed codes on the memorized subset, while leaving
 full-data generalization unresolved.
+
+The discrete generation memorization run `9420033` froze the strongest
+64-register eight-sample alignment checkpoint and trained a 66.8M-parameter
+shared Register GPT for 2,000 one-batch epochs. It completed with 100% token
+accuracy for both modalities and validation cross entropy `3.84e-7` on the
+same eight examples. Shuffled-caption CE was 2.81 for vision and 13.48 for
+tactile, confirming that the memorized predictor uses text. This is not
+held-out generation evidence. Its in-process image panels used a subsequently
+fixed off-by-one generation loop and remain invalid. Corrected post-training
+visualization reproduced the exact-register flow ceiling at `k=64`: vision
+33.4059 dB / 0.90873 SSIM and tactile 37.5625 dB / 0.95650 SSIM.
+
+Corrected full-data alignment job `9419434` remains active. At epoch 3 its
+held-out retrieval top-1 was 82.38% and mean flow loss was 0.6572. These are
+interim metrics, not convergence claims.
 
 Exact configuration, run history, checkpoints, plots, and reconstruction paths
 are maintained in [EXPERIMENT_STATUS.md](EXPERIMENT_STATUS.md).

@@ -13,7 +13,7 @@ model:
   tokenizer_input: "vae_tvl"   # VAE latent patches + frozen TVL semantic tokens
   encoder_latent_patch_size: 2
   nested_dropout: true
-  nested_dropout_mode: "power_of_two"
+  nested_dropout_mode: "uniform"
   fsq_levels: "8 8 8 5 5 5"
 
 # ---- Loss ----
@@ -25,7 +25,7 @@ loss:
   reconstruction_weight: 1.0
 
 # ---- Frozen codec and rectified-flow decoder ----
-reconstruction:
+generation:
   codec_id: "EPFL-VILAB/flextok_vae_c4"
   flow_hidden_dim: 512
   flow_depth: 8
@@ -34,6 +34,14 @@ reconstruction:
   flow_steps: 25
   flow_condition_dropout: 0.1
   flow_guidance_scale: 1.0
+  gpt_hidden_dim: 512
+  gpt_depth: 8
+  gpt_heads: 8
+  gpt_dropout: 0.1
+  text_condition_dropout: 0.1
+  generation_temperature: 1.0
+  generation_top_k: 256
+  generation_guidance_scale: 1.0
   recon_vis_interval: 5
   recon_vis_samples: 4
 

@@ -47,7 +47,7 @@ class CrossModalAlignmentModel(nn.Module):
         n_heads: int = 8,
         dropout: float = 0.1,
         nested_dropout: bool = True,
-        nested_dropout_mode: str = "power_of_two",
+        nested_dropout_mode: str = "uniform",
         init_logit_scale: float = np.log(1 / 0.07),
         use_token_type_embed: bool = True,
         fsq_levels=(8, 8, 8, 5, 5, 5),
@@ -178,7 +178,13 @@ class CrossModalAlignmentModel(nn.Module):
         # bottleneck capacities.
         k_keep = None
         if active_modalities:
-            k_keep = self.register_modules[active_modalities[0]].sample_k_keep() if use_dropout else self.n_registers
+            batch = feature_dict[active_modalities[0]].shape[0]
+            device = feature_dict[active_modalities[0]].device
+            k_keep = (
+                self.register_modules[active_modalities[0]].sample_k_keep(batch, device)
+                if use_dropout else
+                torch.full((batch,), self.n_registers, device=device, dtype=torch.long)
+            )
 
         for mod_name in self.modality_names:
             if mod_name not in feature_dict:
@@ -217,13 +223,13 @@ class CrossModalAlignmentModel(nn.Module):
 
             # Pool only non-zeroed shared tokens to avoid dilution from nested dropout.
             # k_keep indicates how many shared tokens are active (rest are zeroed).
-            if k_keep < shared_tokens.shape[1]:
-                shared_pooled = shared_tokens[:, :k_keep, :].mean(dim=1)
-            else:
-                shared_pooled = shared_tokens.mean(dim=1)  # (B, hidden_dim)
+            shared_mask = tokenized["active_mask"][:, :self.n_shared]
+            shared_pooled = shared_tokens.sum(dim=1) / shared_mask.sum(dim=1, keepdim=True).clamp_min(1)
             shared_proj = self.shared_projectors[mod_name](shared_pooled)
             shared_proj = F.normalize(shared_proj, dim=-1)
-            continuous_shared_pooled = continuous_shared_tokens[:, :min(k_keep, self.n_shared)].mean(dim=1)
+            continuous_shared_pooled = (
+                continuous_shared_tokens * shared_mask.unsqueeze(-1)
+            ).sum(dim=1) / shared_mask.sum(dim=1, keepdim=True).clamp_min(1)
             continuous_shared_proj = F.normalize(
                 self.shared_projectors[mod_name](continuous_shared_pooled), dim=-1
             )
@@ -274,11 +280,21 @@ class FlexTokWrapper(nn.Module):
     def encode(self, input_dict: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
         """Run frozen Stage-1 encoders."""
         self.frozen_encoder.eval()
-        out = self.frozen_encoder(input_dict, feature_mode=self.feature_mode)
+        tokenizer_inputs = {
+            key: value for key, value in input_dict.items()
+            if key in self.alignment_model.modality_names
+        }
+        out = self.frozen_encoder(tokenizer_inputs, feature_mode=self.feature_mode)
         # Remove non-feature keys
         out.pop("logit_scale", None)
         out.pop("logit_bias", None)
         return out
+
+    @torch.no_grad()
+    def encode_text(self, text: torch.Tensor) -> torch.Tensor:
+        """Return frozen contextual text tokens for the generation stage."""
+        self.frozen_encoder.eval()
+        return self.frozen_encoder._encode_openclip_text_sequence(text)
 
     def forward(self, input_dict: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
         """Full forward: frozen encode -> alignment."""

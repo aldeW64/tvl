@@ -1,0 +1,133 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1400" height="760" viewBox="0 0 1400 760" role="img" aria-labelledby="title desc">
+  <title id="title">TVL-FlexTok generation stage</title>
+  <desc id="desc">Training predicts discrete register IDs from text. At inference, generated IDs become register embeddings that condition a flow decoder, producing a VAE latent decoded into a vision or tactile image.</desc>
+  <defs>
+    <marker id="arrow" markerWidth="11" markerHeight="11" refX="9" refY="5.5" orient="auto">
+      <path d="M0 0 L10 5.5 L0 11 Z" fill="#30343b"/>
+    </marker>
+    <style>
+      .title { font: 700 32px Arial, sans-serif; fill: #17191d; }
+      .lane { font: 700 20px Arial, sans-serif; fill: #17191d; }
+      .label { font: 700 17px Arial, sans-serif; fill: #17191d; }
+      .small { font: 15px Arial, sans-serif; fill: #4b515a; }
+      .tiny { font: 13px Arial, sans-serif; fill: #4b515a; }
+      .box { stroke-width: 2; rx: 6; }
+      .input { fill: #f7f7f5; stroke: #686d73; }
+      .frozen { fill: #e8f1fb; stroke: #3976a8; }
+      .train { fill: #e2f5ed; stroke: #1b8067; }
+      .register { fill: #fff1d8; stroke: #a66a13; }
+      .flow { fill: #fbe8e5; stroke: #b64b41; }
+      .latent { fill: #eeeafb; stroke: #6757a6; }
+      .arrow { stroke: #30343b; stroke-width: 2.5; fill: none; marker-end: url(#arrow); }
+      .soft { stroke: #8a9098; stroke-width: 2; fill: none; stroke-dasharray: 7 6; marker-end: url(#arrow); }
+      .divider { stroke: #d4d7db; stroke-width: 2; }
+    </style>
+  </defs>
+
+  <rect width="1400" height="760" fill="#ffffff"/>
+  <text x="700" y="48" text-anchor="middle" class="title">TVL-FlexTok Generation</text>
+
+  <text x="42" y="105" class="lane">TRAIN</text>
+  <line x1="42" y1="120" x2="1358" y2="120" class="divider"/>
+
+  <rect x="70" y="165" width="125" height="68" class="box input"/>
+  <text x="132" y="205" text-anchor="middle" class="label">Caption</text>
+
+  <rect x="240" y="155" width="150" height="88" class="box frozen"/>
+  <text x="315" y="193" text-anchor="middle" class="label">OpenCLIP</text>
+  <text x="315" y="218" text-anchor="middle" class="small">frozen</text>
+
+  <rect x="455" y="143" width="190" height="112" class="box train"/>
+  <text x="550" y="187" text-anchor="middle" class="label">Register GPT</text>
+  <text x="550" y="214" text-anchor="middle" class="small">causal Transformer</text>
+  <text x="550" y="237" text-anchor="middle" class="tiny">trainable</text>
+
+  <rect x="710" y="155" width="170" height="88" class="box register"/>
+  <text x="795" y="193" text-anchor="middle" class="label">Predicted IDs</text>
+  <text x="795" y="218" text-anchor="middle" class="small">1 ... 64</text>
+
+  <rect x="455" y="292" width="190" height="88" class="box frozen"/>
+  <text x="550" y="329" text-anchor="middle" class="label">Aligned tokenizer</text>
+  <text x="550" y="354" text-anchor="middle" class="small">frozen</text>
+
+  <rect x="710" y="292" width="170" height="88" class="box register"/>
+  <text x="795" y="329" text-anchor="middle" class="label">Target IDs</text>
+  <text x="795" y="354" text-anchor="middle" class="small">FSQ</text>
+
+  <rect x="965" y="218" width="150" height="88" class="box input"/>
+  <text x="1040" y="255" text-anchor="middle" class="label">Cross-entropy</text>
+  <text x="1040" y="280" text-anchor="middle" class="small">next register</text>
+
+  <text x="387" y="324" text-anchor="end" class="small">source pair</text>
+  <path d="M195 199 H240" class="arrow"/>
+  <path d="M390 199 H455" class="arrow"/>
+  <path d="M645 199 H710" class="arrow"/>
+  <path d="M880 199 C925 199 925 242 965 247" class="arrow"/>
+  <path d="M390 336 H455" class="arrow"/>
+  <path d="M645 336 H710" class="arrow"/>
+  <path d="M880 336 C925 336 925 282 965 277" class="arrow"/>
+  <path d="M710 316 C675 270 610 270 585 255" class="soft"/>
+  <text x="650" y="264" text-anchor="middle" class="tiny">shifted IDs</text>
+
+  <text x="42" y="438" class="lane">GENERATE</text>
+  <line x1="42" y1="453" x2="1358" y2="453" class="divider"/>
+
+  <rect x="45" y="515" width="105" height="68" class="box input"/>
+  <text x="97" y="555" text-anchor="middle" class="label">Caption</text>
+
+  <rect x="185" y="505" width="125" height="88" class="box frozen"/>
+  <text x="247" y="543" text-anchor="middle" class="label">OpenCLIP</text>
+  <text x="247" y="568" text-anchor="middle" class="small">frozen</text>
+
+  <rect x="345" y="493" width="150" height="112" class="box train"/>
+  <text x="420" y="537" text-anchor="middle" class="label">Register GPT</text>
+  <text x="420" y="564" text-anchor="middle" class="small">autoregressive</text>
+  <text x="420" y="587" text-anchor="middle" class="tiny">vision / tactile</text>
+
+  <rect x="530" y="505" width="135" height="88" class="box register"/>
+  <text x="597" y="543" text-anchor="middle" class="label">FSQ IDs</text>
+  <text x="597" y="568" text-anchor="middle" class="small">prefix K</text>
+
+  <rect x="700" y="505" width="145" height="88" class="box register"/>
+  <text x="772" y="543" text-anchor="middle" class="label">Registers</text>
+  <text x="772" y="568" text-anchor="middle" class="small">code lookup</text>
+
+  <rect x="880" y="493" width="150" height="112" class="box flow"/>
+  <text x="955" y="537" text-anchor="middle" class="label">Flow decoder</text>
+  <text x="955" y="564" text-anchor="middle" class="small">frozen</text>
+  <text x="955" y="587" text-anchor="middle" class="tiny">+ noise</text>
+
+  <rect x="1065" y="505" width="120" height="88" class="box latent"/>
+  <text x="1125" y="543" text-anchor="middle" class="label">VAE latent</text>
+  <text x="1125" y="568" text-anchor="middle" class="small">4 x 28 x 28</text>
+
+  <rect x="1220" y="493" width="135" height="112" class="box frozen"/>
+  <text x="1287" y="537" text-anchor="middle" class="label">VAE decoder</text>
+  <text x="1287" y="564" text-anchor="middle" class="small">frozen</text>
+  <text x="1287" y="587" text-anchor="middle" class="tiny">output</text>
+
+  <path d="M150 549 H185" class="arrow"/>
+  <path d="M310 549 H345" class="arrow"/>
+  <path d="M495 549 H530" class="arrow"/>
+  <path d="M620 505 C610 466 455 466 438 493" class="soft"/>
+  <text x="530" y="474" text-anchor="middle" class="tiny">previous IDs</text>
+  <path d="M665 549 H700" class="arrow"/>
+  <path d="M845 549 H880" class="arrow"/>
+  <path d="M1030 549 H1065" class="arrow"/>
+  <path d="M1185 549 H1220" class="arrow"/>
+
+  <circle cx="555" cy="650" r="7" fill="#a66a13"/>
+  <circle cx="578" cy="650" r="7" fill="#a66a13"/>
+  <circle cx="601" cy="650" r="7" fill="#a66a13"/>
+  <circle cx="624" cy="650" r="7" fill="#a66a13"/>
+  <circle cx="647" cy="650" r="7" fill="#d9c9ad"/>
+  <circle cx="670" cy="650" r="7" fill="#d9c9ad"/>
+  <text x="612" y="683" text-anchor="middle" class="small">truncate once: K = 1 ... 64</text>
+
+  <rect x="1025" y="665" width="18" height="18" class="box train"/>
+  <text x="1052" y="679" class="small">trained</text>
+  <rect x="1130" y="665" width="18" height="18" class="box frozen"/>
+  <text x="1157" y="679" class="small">frozen</text>
+  <rect x="1235" y="665" width="18" height="18" class="box register"/>
+  <text x="1262" y="679" class="small">registers</text>
+</svg>

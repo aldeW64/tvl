@@ -1,0 +1,200 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="1100" viewBox="0 0 1600 1100" role="img" aria-labelledby="title desc">
+  <title id="title">Complete TVL-FlexTok process</title>
+  <desc id="desc">Alignment learns ordered vision and tactile register tokenizers plus flow decoders. Generation training predicts target register IDs from text. Inference converts generated IDs into register embeddings that condition a frozen flow decoder and VAE decoder.</desc>
+  <defs>
+    <marker id="arrow" markerWidth="11" markerHeight="11" refX="9" refY="5.5" orient="auto">
+      <path d="M0 0 L10 5.5 L0 11 Z" fill="#30343b"/>
+    </marker>
+    <style>
+      .title { font: 700 34px Arial, sans-serif; fill: #17191d; }
+      .stage { font: 700 22px Arial, sans-serif; fill: #17191d; }
+      .label { font: 700 16px Arial, sans-serif; fill: #17191d; }
+      .small { font: 14px Arial, sans-serif; fill: #4b515a; }
+      .tiny { font: 12px Arial, sans-serif; fill: #4b515a; }
+      .box { stroke-width: 2; rx: 6; }
+      .input { fill: #f7f7f5; stroke: #686d73; }
+      .frozen { fill: #e8f1fb; stroke: #3976a8; }
+      .align { fill: #e2f5ed; stroke: #1b8067; }
+      .gpt { fill: #e6f4f1; stroke: #087d78; }
+      .token { fill: #fff1d8; stroke: #a66a13; }
+      .flow { fill: #fbe8e5; stroke: #b64b41; }
+      .latent { fill: #eeeafb; stroke: #6757a6; }
+      .loss { fill: #f0f1f2; stroke: #555b63; }
+      .arrow { stroke: #30343b; stroke-width: 2.4; fill: none; marker-end: url(#arrow); }
+      .soft { stroke: #7b8189; stroke-width: 2; fill: none; stroke-dasharray: 7 6; marker-end: url(#arrow); }
+      .divider { stroke: #d2d5d9; stroke-width: 2; }
+    </style>
+  </defs>
+
+  <rect width="1600" height="1100" fill="#ffffff"/>
+  <text x="800" y="48" text-anchor="middle" class="title">TVL-FlexTok: Full Process</text>
+
+  <!-- Stage 1 -->
+  <text x="38" y="100" class="stage">1  ALIGNMENT</text>
+  <line x1="38" y1="116" x2="1562" y2="116" class="divider"/>
+
+  <rect x="50" y="160" width="105" height="58" class="box input"/>
+  <text x="102" y="195" text-anchor="middle" class="label">Vision</text>
+  <rect x="50" y="270" width="105" height="58" class="box input"/>
+  <text x="102" y="305" text-anchor="middle" class="label">Tactile</text>
+
+  <rect x="205" y="148" width="145" height="82" class="box frozen"/>
+  <text x="277" y="183" text-anchor="middle" class="label">TVL + VAE</text>
+  <text x="277" y="207" text-anchor="middle" class="small">frozen</text>
+  <rect x="205" y="258" width="145" height="82" class="box frozen"/>
+  <text x="277" y="293" text-anchor="middle" class="label">TVL + VAE</text>
+  <text x="277" y="317" text-anchor="middle" class="small">frozen</text>
+
+  <rect x="405" y="138" width="165" height="102" class="box align"/>
+  <text x="487" y="178" text-anchor="middle" class="label">Vision registers</text>
+  <text x="487" y="202" text-anchor="middle" class="small">causal resampler</text>
+  <text x="487" y="223" text-anchor="middle" class="tiny">trainable</text>
+  <rect x="405" y="248" width="165" height="102" class="box align"/>
+  <text x="487" y="288" text-anchor="middle" class="label">Tactile registers</text>
+  <text x="487" y="312" text-anchor="middle" class="small">causal resampler</text>
+  <text x="487" y="333" text-anchor="middle" class="tiny">trainable</text>
+
+  <rect x="625" y="153" width="125" height="72" class="box token"/>
+  <text x="687" y="184" text-anchor="middle" class="label">FSQ IDs</text>
+  <text x="687" y="207" text-anchor="middle" class="small">1 ... 64</text>
+  <rect x="625" y="263" width="125" height="72" class="box token"/>
+  <text x="687" y="294" text-anchor="middle" class="label">FSQ IDs</text>
+  <text x="687" y="317" text-anchor="middle" class="small">1 ... 64</text>
+
+  <rect x="805" y="208" width="120" height="72" class="box token"/>
+  <text x="865" y="239" text-anchor="middle" class="label">Prefix K</text>
+  <text x="865" y="262" text-anchor="middle" class="small">paired</text>
+
+  <rect x="975" y="138" width="140" height="102" class="box flow"/>
+  <text x="1045" y="178" text-anchor="middle" class="label">Vision flow</text>
+  <text x="1045" y="202" text-anchor="middle" class="small">+ noise</text>
+  <text x="1045" y="223" text-anchor="middle" class="tiny">trainable</text>
+  <rect x="975" y="248" width="140" height="102" class="box flow"/>
+  <text x="1045" y="288" text-anchor="middle" class="label">Tactile flow</text>
+  <text x="1045" y="312" text-anchor="middle" class="small">+ noise</text>
+  <text x="1045" y="333" text-anchor="middle" class="tiny">trainable</text>
+
+  <rect x="1165" y="153" width="115" height="72" class="box latent"/>
+  <text x="1222" y="184" text-anchor="middle" class="label">Latent</text>
+  <text x="1222" y="207" text-anchor="middle" class="small">vision</text>
+  <rect x="1165" y="263" width="115" height="72" class="box latent"/>
+  <text x="1222" y="294" text-anchor="middle" class="label">Latent</text>
+  <text x="1222" y="317" text-anchor="middle" class="small">tactile</text>
+
+  <rect x="1330" y="148" width="120" height="82" class="box frozen"/>
+  <text x="1390" y="183" text-anchor="middle" class="label">VAE decode</text>
+  <text x="1390" y="207" text-anchor="middle" class="small">frozen</text>
+  <rect x="1330" y="258" width="120" height="82" class="box frozen"/>
+  <text x="1390" y="293" text-anchor="middle" class="label">VAE decode</text>
+  <text x="1390" y="317" text-anchor="middle" class="small">frozen</text>
+
+  <rect x="620" y="375" width="170" height="64" class="box loss"/>
+  <text x="705" y="402" text-anchor="middle" class="label">Shared alignment</text>
+  <text x="705" y="424" text-anchor="middle" class="small">first 8 registers</text>
+  <rect x="995" y="375" width="170" height="64" class="box loss"/>
+  <text x="1080" y="402" text-anchor="middle" class="label">Flow loss</text>
+  <text x="1080" y="424" text-anchor="middle" class="small">VAE latent target</text>
+
+  <path d="M155 189 H205" class="arrow"/><path d="M155 299 H205" class="arrow"/>
+  <path d="M350 189 H405" class="arrow"/><path d="M350 299 H405" class="arrow"/>
+  <path d="M570 189 H625" class="arrow"/><path d="M570 299 H625" class="arrow"/>
+  <path d="M750 189 C780 189 785 225 805 232" class="arrow"/>
+  <path d="M750 299 C780 299 785 263 805 256" class="arrow"/>
+  <path d="M925 232 C950 225 945 189 975 189" class="arrow"/>
+  <path d="M925 256 C950 263 945 299 975 299" class="arrow"/>
+  <path d="M1115 189 H1165" class="arrow"/><path d="M1115 299 H1165" class="arrow"/>
+  <path d="M1280 189 H1330" class="arrow"/><path d="M1280 299 H1330" class="arrow"/>
+  <path d="M665 225 C655 315 670 350 690 375" class="soft"/>
+  <path d="M710 335 C735 350 725 365 720 375" class="soft"/>
+  <path d="M1045 350 V375" class="soft"/>
+
+  <!-- Stage 2 -->
+  <text x="38" y="500" class="stage">2  GENERATION TRAINING</text>
+  <line x1="38" y1="516" x2="1562" y2="516" class="divider"/>
+
+  <rect x="70" y="565" width="115" height="64" class="box input"/>
+  <text x="127" y="603" text-anchor="middle" class="label">Caption</text>
+  <rect x="230" y="555" width="135" height="84" class="box frozen"/>
+  <text x="297" y="590" text-anchor="middle" class="label">OpenCLIP</text>
+  <text x="297" y="615" text-anchor="middle" class="small">frozen</text>
+  <rect x="420" y="545" width="175" height="104" class="box gpt"/>
+  <text x="507" y="585" text-anchor="middle" class="label">Register GPT</text>
+  <text x="507" y="610" text-anchor="middle" class="small">causal Transformer</text>
+  <text x="507" y="632" text-anchor="middle" class="tiny">trainable</text>
+  <rect x="650" y="555" width="145" height="84" class="box token"/>
+  <text x="722" y="590" text-anchor="middle" class="label">Predicted IDs</text>
+  <text x="722" y="615" text-anchor="middle" class="small">64 tokens</text>
+  <rect x="945" y="555" width="170" height="84" class="box frozen"/>
+  <text x="1030" y="590" text-anchor="middle" class="label">Aligned tokenizer</text>
+  <text x="1030" y="615" text-anchor="middle" class="small">frozen source pair</text>
+  <rect x="1170" y="555" width="145" height="84" class="box token"/>
+  <text x="1242" y="590" text-anchor="middle" class="label">Target IDs</text>
+  <text x="1242" y="615" text-anchor="middle" class="small">teacher forcing</text>
+  <rect x="1370" y="555" width="145" height="84" class="box loss"/>
+  <text x="1442" y="590" text-anchor="middle" class="label">Cross-entropy</text>
+  <text x="1442" y="615" text-anchor="middle" class="small">next ID</text>
+
+  <path d="M185 597 H230" class="arrow"/><path d="M365 597 H420" class="arrow"/>
+  <path d="M595 597 H650" class="arrow"/>
+  <path d="M1115 597 H1170" class="arrow"/>
+  <path d="M1315 597 H1370" class="arrow"/>
+  <path d="M795 580 C1030 515 1325 515 1375 572" class="arrow"/>
+  <path d="M1170 620 C1040 695 635 710 545 649" class="soft"/>
+  <text x="930" y="683" text-anchor="middle" class="tiny">shifted target IDs</text>
+
+  <!-- Stage 3 -->
+  <text x="38" y="775" class="stage">3  INFERENCE</text>
+  <line x1="38" y1="791" x2="1562" y2="791" class="divider"/>
+
+  <rect x="45" y="850" width="100" height="62" class="box input"/>
+  <text x="95" y="887" text-anchor="middle" class="label">Caption</text>
+  <rect x="180" y="840" width="125" height="82" class="box frozen"/>
+  <text x="242" y="875" text-anchor="middle" class="label">OpenCLIP</text>
+  <text x="242" y="899" text-anchor="middle" class="small">frozen</text>
+  <rect x="340" y="830" width="155" height="102" class="box gpt"/>
+  <text x="417" y="870" text-anchor="middle" class="label">Register GPT</text>
+  <text x="417" y="895" text-anchor="middle" class="small">autoregressive</text>
+  <text x="417" y="916" text-anchor="middle" class="tiny">vision / tactile</text>
+  <rect x="530" y="840" width="125" height="82" class="box token"/>
+  <text x="592" y="875" text-anchor="middle" class="label">FSQ IDs</text>
+  <text x="592" y="899" text-anchor="middle" class="small">1 ... 64</text>
+  <rect x="690" y="840" width="135" height="82" class="box token"/>
+  <text x="757" y="875" text-anchor="middle" class="label">Registers</text>
+  <text x="757" y="899" text-anchor="middle" class="small">lookup + prefix</text>
+  <rect x="860" y="830" width="145" height="102" class="box flow"/>
+  <text x="932" y="870" text-anchor="middle" class="label">Flow decoder</text>
+  <text x="932" y="895" text-anchor="middle" class="small">frozen + noise</text>
+  <text x="932" y="916" text-anchor="middle" class="tiny">modality specific</text>
+  <rect x="1040" y="840" width="115" height="82" class="box latent"/>
+  <text x="1097" y="875" text-anchor="middle" class="label">VAE latent</text>
+  <text x="1097" y="899" text-anchor="middle" class="small">4 x 28 x 28</text>
+  <rect x="1190" y="830" width="135" height="102" class="box frozen"/>
+  <text x="1257" y="870" text-anchor="middle" class="label">VAE decode</text>
+  <text x="1257" y="895" text-anchor="middle" class="small">frozen</text>
+  <rect x="1360" y="850" width="145" height="62" class="box input"/>
+  <text x="1432" y="876" text-anchor="middle" class="label">Vision / tactile</text>
+  <text x="1432" y="898" text-anchor="middle" class="small">output</text>
+
+  <path d="M145 881 H180" class="arrow"/><path d="M305 881 H340" class="arrow"/>
+  <path d="M495 881 H530" class="arrow"/>
+  <path d="M615 840 C600 805 430 805 420 830" class="soft"/>
+  <text x="520" y="817" text-anchor="middle" class="tiny">previous IDs</text>
+  <path d="M655 881 H690" class="arrow"/><path d="M825 881 H860" class="arrow"/>
+  <path d="M1005 881 H1040" class="arrow"/><path d="M1155 881 H1190" class="arrow"/>
+  <path d="M1325 881 H1360" class="arrow"/>
+
+  <circle cx="700" cy="980" r="7" fill="#a66a13"/>
+  <circle cx="723" cy="980" r="7" fill="#a66a13"/>
+  <circle cx="746" cy="980" r="7" fill="#a66a13"/>
+  <circle cx="769" cy="980" r="7" fill="#a66a13"/>
+  <circle cx="792" cy="980" r="7" fill="#d9c9ad"/>
+  <circle cx="815" cy="980" r="7" fill="#d9c9ad"/>
+  <text x="757" y="1012" text-anchor="middle" class="small">one sequence, any prefix K</text>
+
+  <rect x="1040" y="1000" width="18" height="18" class="box align"/>
+  <text x="1067" y="1014" class="small">alignment trainable</text>
+  <rect x="1210" y="1000" width="18" height="18" class="box gpt"/>
+  <text x="1237" y="1014" class="small">generation trainable</text>
+  <rect x="1390" y="1000" width="18" height="18" class="box frozen"/>
+  <text x="1417" y="1014" class="small">frozen</text>
+</svg>
